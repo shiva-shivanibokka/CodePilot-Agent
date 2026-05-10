@@ -1,0 +1,11 @@
+{
+  "include": ["."],
+  "exclude": ["**/node_modules", "**/__pycache__", ".venv", "venv"],
+  "reportArgumentType": "none",
+  "reportAttributeAccessIssue": "none",
+  "reportOperatorIssue": "none",
+  "reportReturnType": "none",
+  "reportIndexIssue": "none",
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic"
+}
