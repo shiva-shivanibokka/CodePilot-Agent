@@ -1,0 +1,12 @@
+{
+  "replays": [
+    {
+      "file": "money-rounding.json",
+      "title": "Fix a discount bug, with rounding conventions",
+      "cost_usd": 0.0829,
+      "model_calls": 8,
+      "duration_seconds": 36.9,
+      "events": 35
+    }
+  ]
+}
