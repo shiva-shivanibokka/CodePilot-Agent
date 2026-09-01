@@ -1,7 +1,6 @@
 # Core agent
 anthropic>=0.40.0
 langgraph>=0.2.0
-langchain-core>=0.3.0
 langchain-anthropic>=0.3.0
 
 # API & serving
@@ -11,13 +10,17 @@ websockets>=12.0
 pydantic>=2.7.0
 
 # UI
-gradio>=5.0.0
+gradio>=6.0,<7.0    # 5.x lacks type="messages"; the floor must match the API we call
 
 # Sandbox
 docker>=7.0.0          # optional — only needed for Docker sandbox mode
 
 # Session persistence
 redis>=5.0.0           # optional — falls back to in-memory if not installed
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
 
 # Utilities
 python-dotenv>=1.0.0

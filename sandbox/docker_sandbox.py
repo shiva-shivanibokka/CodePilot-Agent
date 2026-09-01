@@ -19,10 +19,8 @@ import asyncio
 import io
 import re
 import tarfile
-import tempfile
 import time
 import uuid
-from pathlib import Path
 
 from models.schemas import ExecutionResult, TestResult
 

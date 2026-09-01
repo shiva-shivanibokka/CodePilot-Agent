@@ -17,11 +17,12 @@ import textwrap
 from typing import Generator
 
 import gradio as gr
+from dotenv import load_dotenv
+
+load_dotenv()  # the README's `cp .env.example .env` step only works if we read it
 
 from agent.graph import build_graph
 from models.schemas import (
-    AgentEvent,
-    AgentEventType,
     AgentMode,
     AgentState,
 )
@@ -55,8 +56,8 @@ def run_agent(
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
         history = history + [
-            ("You", user_request),
-            ("CodePilot", "❌ Please enter your Anthropic API key."),
+            {"role": "user", "content": user_request},
+            {"role": "assistant", "content": "❌ Please enter your Anthropic API key."},
         ]
         yield history, "", "$0.00 | 0 tokens"
         return
@@ -89,7 +90,10 @@ def run_agent(
     router = ModelRouter(api_key=api_key)
 
     # Add user message to history
-    history = history + [(user_request, None)]
+    history = history + [
+        {"role": "user", "content": user_request},
+        {"role": "assistant", "content": ""},
+    ]
     yield history, _format_workspace(workspace), "$0.00 | 0 tokens"
 
     # Run graph synchronously via asyncio.run (Gradio runs in a thread)
@@ -105,12 +109,11 @@ def run_agent(
             sandbox = create_sandbox(state.sandbox_type)
             await sandbox.setup(state.workspace_files)
 
-            state_dict = state.model_dump(mode="json")
-            state_dict["_router"] = router
-            state_dict["_sandbox"] = sandbox
-
             try:
-                result = await _graph.ainvoke(state_dict)
+                result = await _graph.ainvoke(
+                    state.model_dump(mode="json"),
+                    config={"configurable": {"router": router, "sandbox": sandbox}},
+                )
                 final_state = AgentState.model_validate(
                     {k: v for k, v in result.items() if not k.startswith("_")}
                 )
@@ -125,7 +128,7 @@ def run_agent(
             line = event.to_ui_line()
             agent_lines.append(line)
             trace = "\n".join(agent_lines)
-            current_history = history[:-1] + [(user_request, trace)]
+            current_history = history[:-1] + [{"role": "assistant", "content": trace}]
             cost_text = (
                 f"${final_state.total_cost_usd:.4f} | {final_state.total_tokens} tokens"
             )
@@ -142,7 +145,7 @@ def run_agent(
 
         summary = "\n\n---\n" + final_reply
         full_trace = "\n".join(agent_lines) + summary
-        history = history[:-1] + [(user_request, full_trace)]
+        history = history[:-1] + [{"role": "assistant", "content": full_trace}]
         cost_text = (
             f"${final_state.total_cost_usd:.4f} | {final_state.total_tokens} tokens"
         )
@@ -150,7 +153,7 @@ def run_agent(
 
     except Exception as exc:
         err_msg = f"❌ Unexpected error: {exc}"
-        history = history[:-1] + [(user_request, err_msg)]
+        history = history[:-1] + [{"role": "assistant", "content": err_msg}]
         yield history, _format_workspace(workspace), "$0.00 | 0 tokens"
     finally:
         loop.close()
@@ -205,12 +208,9 @@ with gr.Blocks(title="CodePilot-Agent", theme=gr.themes.Soft()) as demo:
     with gr.Row():
         # ── Left panel: Chat ──────────────────────────────────────────
         with gr.Column(scale=3):
-            chatbot = gr.Chatbot(
-                label="Agent Trace",
-                height=600,
-                show_copy_button=True,
-                bubble_full_width=False,
-            )
+            # Gradio 6 removed `type`: messages format is the only format, so history
+            # entries are {"role", "content"} dicts throughout this file.
+            chatbot = gr.Chatbot(label="Agent Trace", height=600)
             with gr.Row():
                 msg_input = gr.Textbox(
                     placeholder="Describe what you want to build or fix...",
@@ -231,9 +231,11 @@ with gr.Blocks(title="CodePilot-Agent", theme=gr.themes.Soft()) as demo:
         with gr.Column(scale=2):
             api_key_input = gr.Textbox(
                 label="Anthropic API Key",
-                placeholder="sk-ant-...",
+                placeholder="sk-ant-…  (blank uses the server's key)",
                 type="password",
-                value=os.getenv("ANTHROPIC_API_KEY", ""),
+                # Never prefill: `value=` renders into the page every visitor loads,
+                # so a hosted instance would ship its own key to everyone (F-8).
+                value="",
             )
             with gr.Row():
                 mode_radio = gr.Radio(
@@ -243,7 +245,7 @@ with gr.Blocks(title="CodePilot-Agent", theme=gr.themes.Soft()) as demo:
                 )
                 sandbox_radio = gr.Radio(
                     choices=["Subprocess", "Docker"],
-                    value="Subprocess",
+                    value=os.getenv("SANDBOX_TYPE", "subprocess").capitalize(),
                     label="Sandbox",
                 )
             cost_display = gr.Textbox(

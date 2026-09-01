@@ -20,14 +20,13 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent.graph import build_graph
 from models.schemas import (
-    AgentMode,
     AgentState,
     FinalResponse,
     SessionResponse,
@@ -40,6 +39,8 @@ from session.manager import SessionManager
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
+
+load_dotenv()
 
 _session_manager = SessionManager()
 _event_queues: dict[str, asyncio.Queue] = {}  # session_id → Queue[AgentEvent | None]
@@ -194,19 +195,17 @@ async def _run_graph(state: AgentState, api_key: str, queue: asyncio.Queue) -> N
     state.sandbox_id = sandbox_id
 
     # Build initial state dict for LangGraph
-    state_dict: dict[str, Any] = state.model_dump(mode="json")
-    state_dict["_router"] = router
-    state_dict["_sandbox"] = sandbox
-
     try:
-        # Run graph — LangGraph compiles to a Pregel-style async runner
-        final_state_dict = await _graph.ainvoke(state_dict)
+        final_state_dict = await _graph.ainvoke(
+            state.model_dump(mode="json"),
+            config={"configurable": {"router": router, "sandbox": sandbox}},
+        )
 
         # Reconstruct final state and save
         final_state = AgentState.model_validate(
             {k: v for k, v in final_state_dict.items() if not k.startswith("_")}
         )
-        final_state.is_complete = True
+        final_state.is_complete = final_state.reviewer_approved
         await _session_manager.save(final_state)
 
         # Push all events to queue
@@ -215,6 +214,12 @@ async def _run_graph(state: AgentState, api_key: str, queue: asyncio.Queue) -> N
 
     except Exception as exc:
         from models.schemas import AgentEvent, AgentEventType, AgentName
+
+        # Persist the failure too, or GET /sessions/{id} reports the initial state
+        # with is_complete=False forever and a polling client hangs (F-26).
+        state.error_message = str(exc)
+        state.is_complete = True
+        await _session_manager.save(state)
 
         err_event = AgentEvent(
             session_id=state.session_id,

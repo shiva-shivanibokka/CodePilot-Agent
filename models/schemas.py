@@ -190,12 +190,19 @@ class LLMCall(BaseModel):
 
     @property
     def cost_usd(self) -> float:
-        """Approximate cost based on Anthropic pricing (May 2025)."""
+        """USD per token, Anthropic list price.
+
+        An unknown model returns 0.0 rather than guessing at another model's rate:
+        a cost ticker that is confidently wrong is worse than one that is blank.
+        """
         pricing = {
-            "claude-sonnet-4-5": (0.000003, 0.000015),  # per token in/out
-            "claude-haiku-3-5": (0.0000008, 0.000004),
+            "claude-opus-5": (5.00e-6, 25.00e-6),
+            "claude-sonnet-5": (2.00e-6, 10.00e-6),
+            "claude-haiku-4-5": (1.00e-6, 5.00e-6),
         }
-        in_price, out_price = pricing.get(self.model, (0.000003, 0.000015))
+        if self.model not in pricing:
+            return 0.0
+        in_price, out_price = pricing[self.model]
         return (self.input_tokens * in_price) + (self.output_tokens * out_price)
 
 
@@ -241,8 +248,11 @@ class AgentState(BaseModel):
     events: list[AgentEvent] = Field(default_factory=list)
 
     # Control flow
-    iteration_count: int = 0
+    iteration_count: int = 0        # debugger passes
     max_iterations: int = 5
+    review_count: int = 0           # reviewer passes — bounds the coder<->reviewer loop
+    max_reviews: int = 3
+    max_cost_usd: float = 1.00      # hard ceiling for one session
     reviewer_approved: bool = False
     needs_user_input: bool = False
     user_correction: str | None = None

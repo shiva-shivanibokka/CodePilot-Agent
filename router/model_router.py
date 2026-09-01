@@ -14,9 +14,10 @@ This gives us:
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 from anthropic import AsyncAnthropic
 from anthropic.types import TextBlock, ToolUseBlock
@@ -24,9 +25,11 @@ from anthropic.types import TextBlock, ToolUseBlock
 from models.schemas import AgentName, LLMCall, TaskComplexity
 
 
-# Anthropic model IDs
-SONNET = "claude-sonnet-4-5"
-HAIKU = "claude-haiku-3-5"
+# Anthropic model IDs. Overridable so a retirement is a config change, not a patch.
+# The previous HAIKU constant ("claude-haiku-3-5") was never a valid Anthropic
+# model ID, so every Haiku-routed call 404'd — see AUDIT.md F-25.
+SONNET = os.getenv("CODEPILOT_STRONG_MODEL", "claude-sonnet-5")
+HAIKU = os.getenv("CODEPILOT_FAST_MODEL", "claude-haiku-4-5")
 
 # Routing table: (agent, complexity) → model
 _ROUTING: dict[tuple[AgentName, TaskComplexity], str] = {
@@ -61,6 +64,20 @@ class ModelRouter:
         # at call sites — the SDK accepts plain dicts at runtime fine.
         self._client: Any = AsyncAnthropic(api_key=api_key)
         self._call_log: list[LLMCall] = []
+
+    async def validate_models(self) -> None:
+        """Fail fast if a routed model is not available to this key.
+
+        Hardcoding model IDs means a provider retirement surfaces as a 404 on a
+        live request instead of at startup. Ask the provider what it serves.
+        """
+        available = {m.id async for m in self._client.models.list()}
+        missing = {SONNET, HAIKU} - available
+        if missing:
+            raise RuntimeError(
+                f"Configured models are not available to this API key: {sorted(missing)}. "
+                f"Set CODEPILOT_STRONG_MODEL / CODEPILOT_FAST_MODEL to available IDs."
+            )
 
     def select_model(
         self,

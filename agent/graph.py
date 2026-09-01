@@ -25,8 +25,9 @@ Graph structure:
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncGenerator
+from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from agent.prompts import (
@@ -35,7 +36,6 @@ from agent.prompts import (
     ORCHESTRATOR_SYSTEM,
     PLANNER_SYSTEM,
     REVIEWER_SYSTEM,
-    TESTER_SYSTEM,
 )
 from indexer.ast_indexer import ASTIndexer
 from models.schemas import (
@@ -47,22 +47,40 @@ from models.schemas import (
     CoderAttempt,
     DebugTrace,
     ExecutionPlan,
-    LLMCall,
     PlanStep,
+    StepStatus,
     TaskComplexity,
 )
 from router.model_router import ModelRouter
-from sandbox.factory import create_sandbox
 
 
 # ---------------------------------------------------------------------------
 # State type alias — plain dict for LangGraph compatibility
 # All agent state is serialised/deserialised via Pydantic at each node.
-# Non-serialisable objects (_router, _sandbox) live in the dict alongside.
+# Live objects (router, sandbox) travel in config['configurable'], never in state.
 # ---------------------------------------------------------------------------
 
 # Simple alias — avoids TypedDict friction with LangGraph's pyright stubs
 GDict = dict  # generic dict, typed as Any throughout
+
+
+def _router_from(config: RunnableConfig) -> ModelRouter:
+    """The router is injected per-invocation, never carried in graph state.
+
+    Graph state is serialised and revalidated at every node; live objects cannot
+    survive that, and a node that forgot to re-attach one broke the whole graph.
+    """
+    router = (config.get("configurable") or {}).get("router")
+    if router is None:
+        raise RuntimeError(
+            "No router supplied. Invoke the graph with "
+            'config={"configurable": {"router": ModelRouter(...)}}.'
+        )
+    return router
+
+
+def _sandbox_from(config: RunnableConfig) -> Any:
+    return (config.get("configurable") or {}).get("sandbox")
 
 
 def _state_from_dict(d: GDict) -> AgentState:
@@ -101,9 +119,9 @@ def _emit(
 # ---------------------------------------------------------------------------
 
 
-async def orchestrator_node(state_dict: dict[str, Any]) -> dict[str, Any]:
+async def orchestrator_node(state_dict: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     state = _state_from_dict(state_dict)
-    router: ModelRouter = state_dict["_router"]
+    router: ModelRouter = _router_from(config)
 
     _emit(
         state,
@@ -170,9 +188,9 @@ async def orchestrator_node(state_dict: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def planner_node(state_dict: dict[str, Any]) -> dict[str, Any]:
+async def planner_node(state_dict: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     state = _state_from_dict(state_dict)
-    router: ModelRouter = state_dict["_router"]
+    router: ModelRouter = _router_from(config)
 
     # Build AST index of workspace
     indexer = ASTIndexer()
@@ -271,11 +289,7 @@ async def planner_node(state_dict: dict[str, Any]) -> dict[str, Any]:
         f"${call.cost_usd:.5f} | {call.input_tokens + call.output_tokens} tokens",
     )
 
-    # Store index results in state for coder to use
-    state_dict_out = _state_to_dict(state)
-    state_dict_out["_codebase_index"] = codebase_index  # pass index forward
-    state_dict_out["_router"] = router
-    return state_dict_out
+    return _state_to_dict(state)
 
 
 # ---------------------------------------------------------------------------
@@ -283,15 +297,22 @@ async def planner_node(state_dict: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def coder_node(state_dict: dict[str, Any]) -> dict[str, Any]:
+async def coder_node(state_dict: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     state = _state_from_dict(state_dict)
-    router: ModelRouter = state_dict["_router"]
-    sandbox = state_dict.get("_sandbox")
+    router: ModelRouter = _router_from(config)
+    sandbox = _sandbox_from(config)
 
     if not state.execution_plan or not state.execution_plan.steps:
         _emit(state, AgentName.CODER, AgentEventType.ERROR, "No execution plan found.")
         state.error_message = "No execution plan"
-        return _state_to_dict(state) | {"_router": router, "_sandbox": sandbox}
+        return _state_to_dict(state)
+
+    if state.current_step >= len(state.execution_plan.steps):
+        _emit(state, AgentName.CODER, AgentEventType.ERROR,
+              f"Plan pointer {state.current_step} is past the end of a "
+              f"{len(state.execution_plan.steps)}-step plan.")
+        state.error_message = "Plan pointer out of range"
+        return _state_to_dict(state)
 
     step = state.execution_plan.steps[state.current_step]
     _emit(
@@ -404,7 +425,7 @@ async def coder_node(state_dict: dict[str, Any]) -> dict[str, Any]:
         f"${call.cost_usd:.5f} | {call.input_tokens + call.output_tokens} tokens",
     )
 
-    return _state_to_dict(state) | {"_router": router, "_sandbox": sandbox}
+    return _state_to_dict(state)
 
 
 # ---------------------------------------------------------------------------
@@ -412,10 +433,11 @@ async def coder_node(state_dict: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def tester_node(state_dict: dict[str, Any]) -> dict[str, Any]:
+async def tester_node(state_dict: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+    # The Tester runs no model: it executes a command and parses the output.
+    # TESTER_SYSTEM is therefore unused — see AUDIT.md F-13.
     state = _state_from_dict(state_dict)
-    router: ModelRouter = state_dict["_router"]
-    sandbox = state_dict.get("_sandbox")
+    sandbox = _sandbox_from(config)
 
     step = (
         state.execution_plan.steps[state.current_step] if state.execution_plan else None
@@ -431,7 +453,8 @@ async def tester_node(state_dict: dict[str, Any]) -> dict[str, Any]:
     if sandbox:
         result = await sandbox.run_tests(test_cmd)
     else:
-        # No sandbox — skip test execution, report as passed for demo
+        # No sandbox: nothing ran. Reporting this as a pass would let the Reviewer
+        # approve on evidence that does not exist.
         from models.schemas import TestResult
 
         result = TestResult(
@@ -439,10 +462,12 @@ async def tester_node(state_dict: dict[str, Any]) -> dict[str, Any]:
             passed=0,
             failed=0,
             errors=0,
-            output="[No sandbox configured — skipping test execution]",
+            output="[No sandbox configured — tests were NOT run]",
             duration_ms=0,
-            success=True,
+            success=False,
         )
+        _emit(state, AgentName.TESTER, AgentEventType.ERROR,
+              "No sandbox attached — tests were not run. This is not a passing result.")
 
     state.test_results.append(result)
 
@@ -463,7 +488,7 @@ async def tester_node(state_dict: dict[str, Any]) -> dict[str, Any]:
             payload={"success": False, "output": result.output},
         )
 
-    return _state_to_dict(state) | {"_router": router, "_sandbox": sandbox}
+    return _state_to_dict(state)
 
 
 # ---------------------------------------------------------------------------
@@ -471,14 +496,14 @@ async def tester_node(state_dict: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def debugger_node(state_dict: dict[str, Any]) -> dict[str, Any]:
+async def debugger_node(state_dict: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     state = _state_from_dict(state_dict)
-    router: ModelRouter = state_dict["_router"]
-    sandbox = state_dict.get("_sandbox")
+    router: ModelRouter = _router_from(config)
+    sandbox = _sandbox_from(config)
 
     last_result = state.last_test_result()
     if not last_result:
-        return _state_to_dict(state) | {"_router": router, "_sandbox": sandbox}
+        return _state_to_dict(state)
 
     state.iteration_count += 1
     _emit(
@@ -563,7 +588,7 @@ async def debugger_node(state_dict: dict[str, Any]) -> dict[str, Any]:
         f"${call.cost_usd:.5f} | {call.input_tokens + call.output_tokens} tokens",
     )
 
-    return _state_to_dict(state) | {"_router": router, "_sandbox": sandbox}
+    return _state_to_dict(state)
 
 
 # ---------------------------------------------------------------------------
@@ -571,16 +596,17 @@ async def debugger_node(state_dict: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def reviewer_node(state_dict: dict[str, Any]) -> dict[str, Any]:
+async def reviewer_node(state_dict: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     state = _state_from_dict(state_dict)
-    router: ModelRouter = state_dict["_router"]
-    sandbox = state_dict.get("_sandbox")
+    router: ModelRouter = _router_from(config)
 
+    state.review_count += 1
     _emit(
         state,
         AgentName.REVIEWER,
         AgentEventType.THINKING,
-        "Reviewing implementation against original task requirements...",
+        f"Review {state.review_count}/{state.max_reviews}: checking the "
+        "implementation against the original task...",
     )
 
     files_text = ""
@@ -638,6 +664,33 @@ async def reviewer_node(state_dict: dict[str, Any]) -> dict[str, Any]:
             AgentEventType.THINKING,
             f"Changes needed: {reason[:200]}",
         )
+        # Giving up has to be legible. route_after_reviewer can only return a
+        # route name, so if this was the last allowed pass, say so here — a run
+        # that stops without saying why is indistinguishable from one that hung.
+        exhausted = state.review_count >= state.max_reviews
+        over_budget = state.total_cost_usd >= state.max_cost_usd
+        if exhausted or over_budget:
+            limit = (
+                f"review limit ({state.max_reviews}) reached"
+                if exhausted
+                else f"cost ceiling (${state.max_cost_usd:.2f}) reached"
+            )
+            state.is_complete = True
+            state.error_message = (
+                f"Stopped after {state.review_count} review(s): {limit}. "
+                "The reviewer never approved the implementation."
+            )
+            state.final_output = _build_final_output(state)
+            _emit(state, AgentName.REVIEWER, AgentEventType.ERROR, state.error_message)
+        else:
+            # Advance the plan pointer HERE. Conditional-edge functions only return
+            # a route name; state they mutate is discarded, which is why every run
+            # used to re-execute step 1 forever.
+            plan = state.execution_plan
+            if plan and state.current_step < plan.total_steps - 1:
+                plan.steps[state.current_step].status = StepStatus.DONE
+                state.current_step += 1
+                plan.steps[state.current_step].status = StepStatus.IN_PROGRESS
 
     _emit(
         state,
@@ -646,7 +699,7 @@ async def reviewer_node(state_dict: dict[str, Any]) -> dict[str, Any]:
         f"${call.cost_usd:.5f} | {call.input_tokens + call.output_tokens} tokens",
     )
 
-    return _state_to_dict(state) | {"_router": router, "_sandbox": sandbox}
+    return _state_to_dict(state)
 
 
 # ---------------------------------------------------------------------------
@@ -654,9 +707,9 @@ async def reviewer_node(state_dict: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def qa_node(state_dict: dict[str, Any]) -> dict[str, Any]:
+async def qa_node(state_dict: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     state = _state_from_dict(state_dict)
-    router: ModelRouter = state_dict["_router"]
+    router: ModelRouter = _router_from(config)
 
     _emit(
         state,
@@ -693,7 +746,7 @@ async def qa_node(state_dict: dict[str, Any]) -> dict[str, Any]:
     state.is_complete = True
 
     _emit(state, AgentName.ORCHESTRATOR, AgentEventType.DONE, text)
-    return _state_to_dict(state) | {"_router": router}
+    return _state_to_dict(state)
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +766,8 @@ def route_after_tester(state_dict: dict[str, Any]) -> str:
     last = state.last_test_result()
     if last and last.success:
         return "review"
+    if state.total_cost_usd >= state.max_cost_usd:
+        return "review"
     if state.iteration_count >= state.max_iterations:
         return "review"  # force review even on failure — reviewer will reject
     return "debug"
@@ -723,17 +778,14 @@ def route_after_debugger(state_dict: dict[str, Any]) -> str:
 
 
 def route_after_reviewer(state_dict: dict[str, Any]) -> str:
+    """Pure: returns a route name only. All state changes happen in reviewer_node."""
     state = _state_from_dict(state_dict)
     if state.reviewer_approved:
         return END
-    if state.iteration_count >= state.max_iterations:
-        return END  # give up cleanly
-    # Advance to next step or loop back to coder
-    if (
-        state.execution_plan
-        and state.current_step < state.execution_plan.total_steps - 1
-    ):
-        state.current_step += 1
+    if state.review_count >= state.max_reviews:
+        return END  # give up cleanly rather than loop forever
+    if state.total_cost_usd >= state.max_cost_usd:
+        return END
     return "code"
 
 
