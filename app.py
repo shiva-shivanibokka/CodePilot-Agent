@@ -59,11 +59,11 @@ def run_agent(
             {"role": "user", "content": user_request},
             {"role": "assistant", "content": "❌ Please enter your Anthropic API key."},
         ]
-        yield history, "", "$0.00 | 0 tokens"
+        yield history, "", "$0.00 | 0 tokens", "_No calls yet._"
         return
 
     if not user_request.strip():
-        yield history, "", "$0.00 | 0 tokens"
+        yield history, "", "$0.00 | 0 tokens", "_No calls yet._"
         return
 
     # Parse uploaded files into workspace dict
@@ -94,7 +94,7 @@ def run_agent(
         {"role": "user", "content": user_request},
         {"role": "assistant", "content": ""},
     ]
-    yield history, _format_workspace(workspace), "$0.00 | 0 tokens"
+    yield history, _format_workspace(workspace), "$0.00 | 0 tokens", "_No calls yet._"
 
     # Run graph synchronously via asyncio.run (Gradio runs in a thread)
     loop = asyncio.new_event_loop()
@@ -136,6 +136,7 @@ def run_agent(
                 current_history,
                 _format_workspace(final_state.workspace_files),
                 cost_text,
+                _format_costs(final_state),
             )
 
         # Final reply
@@ -149,12 +150,17 @@ def run_agent(
         cost_text = (
             f"${final_state.total_cost_usd:.4f} | {final_state.total_tokens} tokens"
         )
-        yield history, _format_workspace(final_state.workspace_files), cost_text
+        yield (
+            history,
+            _format_workspace(final_state.workspace_files),
+            cost_text,
+            _format_costs(final_state),
+        )
 
     except Exception as exc:
         err_msg = f"❌ Unexpected error: {exc}"
         history = history[:-1] + [{"role": "assistant", "content": err_msg}]
-        yield history, _format_workspace(workspace), "$0.00 | 0 tokens"
+        yield history, _format_workspace(workspace), "$0.00 | 0 tokens", "_No calls yet._"
     finally:
         loop.close()
 
@@ -162,6 +168,36 @@ def run_agent(
 # ---------------------------------------------------------------------------
 # UI helpers
 # ---------------------------------------------------------------------------
+
+
+def _format_costs(state: AgentState) -> str:
+    """Per-call spend, newest last. A running total alone hides which agent is
+    expensive, which is the only number that changes how you configure it."""
+    if not state.llm_calls:
+        return "_No calls yet._"
+    rows = [
+        "| # | Agent | Model | In | Out | Latency | Cost |",
+        "|--:|---|---|--:|--:|--:|--:|",
+    ]
+    for i, c in enumerate(state.llm_calls, 1):
+        model = c.model.replace("claude-", "").replace("-20251001", "")
+        rows.append(
+            f"| {i} | {c.agent.value} | `{model}` | {c.input_tokens:,} | "
+            f"{c.output_tokens:,} | {c.latency_ms / 1000:.1f}s | ${c.cost_usd:.5f} |"
+        )
+    rows.append(
+        f"| | **total** | | **{sum(c.input_tokens for c in state.llm_calls):,}** | "
+        f"**{sum(c.output_tokens for c in state.llm_calls):,}** | | "
+        f"**${state.total_cost_usd:.4f}** |"
+    )
+    unpriced = {c.model for c in state.llm_calls if c.cost_usd == 0.0}
+    if unpriced:
+        rows.append("")
+        rows.append(
+            f"> ⚠️ No published price for {', '.join(sorted(unpriced))} — "
+            "those calls are counted as $0 and the total is an underestimate."
+        )
+    return "\n".join(rows)
 
 
 def _format_workspace(files: dict[str, str]) -> str:
@@ -202,7 +238,7 @@ EXAMPLES = [
     ["What does this codebase do? Summarise the main functions.", "subprocess", "Q&A"],
 ]
 
-with gr.Blocks(title="CodePilot-Agent", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="CodePilot-Agent") as demo:  # Gradio 6: theme moved to launch()
     gr.Markdown(DESCRIPTION)
 
     with gr.Row():
@@ -253,6 +289,8 @@ with gr.Blocks(title="CodePilot-Agent", theme=gr.themes.Soft()) as demo:
                 value="$0.00 | 0 tokens",
                 interactive=False,
             )
+            with gr.Accordion("Cost per call", open=True):
+                cost_breakdown = gr.Markdown(value="_No calls yet._")
             workspace_display = gr.Markdown(
                 value="No files yet.",
                 label="Workspace",
@@ -276,7 +314,7 @@ with gr.Blocks(title="CodePilot-Agent", theme=gr.themes.Soft()) as demo:
             file_upload,
             chatbot,
         ],
-        outputs=[chatbot, workspace_display, cost_display],
+        outputs=[chatbot, workspace_display, cost_display, cost_breakdown],
     )
     msg_input.submit(
         fn=run_agent,
@@ -288,13 +326,18 @@ with gr.Blocks(title="CodePilot-Agent", theme=gr.themes.Soft()) as demo:
             file_upload,
             chatbot,
         ],
-        outputs=[chatbot, workspace_display, cost_display],
+        outputs=[chatbot, workspace_display, cost_display, cost_breakdown],
     )
     clear_btn.click(
-        fn=lambda: ([], "No files yet.", "$0.00 | 0 tokens"),
-        outputs=[chatbot, workspace_display, cost_display],
+        fn=lambda: ([], "No files yet.", "$0.00 | 0 tokens", "_No calls yet._"),
+        outputs=[chatbot, workspace_display, cost_display, cost_breakdown],
     )
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, show_error=True)
+    demo.launch(
+        server_name="127.0.0.1",  # local tool: do not bind to every interface
+        server_port=7860,
+        show_error=True,
+        theme=gr.themes.Soft(),
+    )

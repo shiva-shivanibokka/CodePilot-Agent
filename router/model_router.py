@@ -14,6 +14,7 @@ This gives us:
 
 from __future__ import annotations
 
+import difflib
 import os
 import time
 from datetime import datetime
@@ -29,7 +30,7 @@ from models.schemas import AgentName, LLMCall, TaskComplexity
 # The previous HAIKU constant ("claude-haiku-3-5") was never a valid Anthropic
 # model ID, so every Haiku-routed call 404'd — see AUDIT.md F-25.
 SONNET = os.getenv("CODEPILOT_STRONG_MODEL", "claude-sonnet-5")
-HAIKU = os.getenv("CODEPILOT_FAST_MODEL", "claude-haiku-4-5")
+HAIKU = os.getenv("CODEPILOT_FAST_MODEL", "claude-haiku-4-5-20251001")
 
 # Routing table: (agent, complexity) → model
 _ROUTING: dict[tuple[AgentName, TaskComplexity], str] = {
@@ -73,11 +74,21 @@ class ModelRouter:
         """
         available = {m.id async for m in self._client.models.list()}
         missing = {SONNET, HAIKU} - available
-        if missing:
-            raise RuntimeError(
-                f"Configured models are not available to this API key: {sorted(missing)}. "
-                f"Set CODEPILOT_STRONG_MODEL / CODEPILOT_FAST_MODEL to available IDs."
-            )
+        if not missing:
+            return
+
+        # Some models are served under a bare alias, others only under a dated id.
+        # Guessing wrong is the single easiest way to ship a 404, so name the
+        # near-miss rather than making the reader diff two strings by eye.
+        hints = []
+        for want in sorted(missing):
+            close = difflib.get_close_matches(want, sorted(available), n=2, cutoff=0.6)
+            hints.append(f"{want!r}" + (f" — did you mean {close}?" if close else ""))
+        raise RuntimeError(
+            "Configured models are not available to this API key:\n  "
+            + "\n  ".join(hints)
+            + "\nSet CODEPILOT_STRONG_MODEL / CODEPILOT_FAST_MODEL to override."
+        )
 
     def select_model(
         self,

@@ -139,7 +139,7 @@ async def orchestrator_node(state_dict: dict[str, Any], config: RunnableConfig) 
                 f"User request: {state.user_request}\n\n"
                 f"Mode: {state.mode.value}\n\n"
                 "Classify this as SIMPLE or COMPLEX and explain in one sentence. "
-                'Reply with JSON: {{"complexity": "simple"|"complex", "reason": "..."}}'
+                'Reply with only JSON, no prose: {"complexity": "simple"|"complex", "reason": "..."}'
             ),
         }
     ]
@@ -154,11 +154,21 @@ async def orchestrator_node(state_dict: dict[str, Any], config: RunnableConfig) 
     state.llm_calls.append(call)
 
     try:
-        parsed = json.loads(text.strip())
-        complexity_str = parsed.get("complexity", "simple").lower()
+        # Same extraction the Planner uses. Calling json.loads() on the raw reply
+        # here (and _extract_json there) meant one parser tolerated a wrapped
+        # reply and the other did not — so complexity routing silently never ran.
+        parsed = json.loads(_extract_json(text))
+        complexity_str = str(parsed.get("complexity", "simple")).lower()
         reason = parsed.get("reason", "")
-    except Exception:
-        complexity_str, reason = "simple", "Could not parse complexity"
+    except Exception as exc:
+        complexity_str, reason = "simple", f"defaulted to simple: {exc}"
+        _emit(
+            state,
+            AgentName.ORCHESTRATOR,
+            AgentEventType.ERROR,
+            f"Could not parse the complexity reply ({exc}); defaulting to SIMPLE. "
+            "Model routing is degraded for this run.",
+        )
 
     complexity = (
         TaskComplexity.COMPLEX if complexity_str == "complex" else TaskComplexity.SIMPLE
@@ -337,6 +347,17 @@ async def coder_node(state_dict: dict[str, Any], config: RunnableConfig) -> dict
     if prior_attempts:
         last = prior_attempts[-1]
         prior_text = f"\n\nPREVIOUS ATTEMPT FAILED. Rationale was: {last.rationale}\nTry a different approach."
+    if state.reviewer_feedback:
+        prior_text += (
+            f"\n\nTHE REVIEWER REJECTED THE LAST ATTEMPT:\n{state.reviewer_feedback}\n"
+            "Address this specifically."
+        )
+    _last_test = state.last_test_result()
+    if _last_test is not None and _last_test.no_tests:
+        prior_text += (
+            f"\n\nNOTE: `{_last_test.command}` collected no tests. Write the test "
+            "file(s) this step needs, at paths that command will actually find."
+        )
 
     messages = [
         {
@@ -471,7 +492,26 @@ async def tester_node(state_dict: dict[str, Any], config: RunnableConfig) -> dic
 
     state.test_results.append(result)
 
-    if result.success:
+    # A step is finished when its tests pass. Advancing the plan on reviewer
+    # *rejection* (as this used to) means a plan only progresses when something
+    # goes wrong, so a first-time approval ends the run after step one.
+    plan = state.execution_plan
+    if result.success and plan and plan.steps:
+        plan.steps[state.current_step].status = StepStatus.DONE
+        if state.current_step < plan.total_steps - 1:
+            state.current_step += 1
+            plan.steps[state.current_step].status = StepStatus.IN_PROGRESS
+
+    if result.no_tests:
+        _emit(
+            state,
+            AgentName.TESTER,
+            AgentEventType.TEST_RESULT,
+            f"No tests were collected by `{test_cmd}` — returning to the Coder to "
+            "write them. A missing suite is not a failing one.",
+            payload={"no_tests": True, "output": result.output[-2000:]},
+        )
+    elif result.success:
         _emit(
             state,
             AgentName.TESTER,
@@ -683,13 +723,12 @@ async def reviewer_node(state_dict: dict[str, Any], config: RunnableConfig) -> d
             state.final_output = _build_final_output(state)
             _emit(state, AgentName.REVIEWER, AgentEventType.ERROR, state.error_message)
         else:
-            # Advance the plan pointer HERE. Conditional-edge functions only return
-            # a route name; state they mutate is discarded, which is why every run
-            # used to re-execute step 1 forever.
+            # Rejection means redo the current step, not skip to the next one —
+            # and the Coder has to actually see why, or it reruns the same attempt
+            # against feedback it was never shown.
+            state.reviewer_feedback = reason
             plan = state.execution_plan
-            if plan and state.current_step < plan.total_steps - 1:
-                plan.steps[state.current_step].status = StepStatus.DONE
-                state.current_step += 1
+            if plan and plan.steps:
                 plan.steps[state.current_step].status = StepStatus.IN_PROGRESS
 
     _emit(
@@ -764,10 +803,23 @@ def route_after_orchestrator(state_dict: dict[str, Any]) -> str:
 def route_after_tester(state_dict: dict[str, Any]) -> str:
     state = _state_from_dict(state_dict)
     last = state.last_test_result()
-    if last and last.success:
-        return "review"
     if state.total_cost_usd >= state.max_cost_usd:
         return "review"
+
+    # No suite to run is the Coder's problem, not the Debugger's. Routing it to
+    # the Debugger asks a model to root-cause a missing directory inside
+    # application code — which it will attempt, expensively.
+    if last and last.no_tests:
+        if state.iteration_count >= state.max_iterations:
+            return "review"
+        return "code"
+
+    if last and last.success:
+        plan = state.execution_plan
+        if plan and any(st.status != StepStatus.DONE for st in plan.steps):
+            return "code"  # on to the next plan step
+        return "review"
+
     if state.iteration_count >= state.max_iterations:
         return "review"  # force review even on failure — reviewer will reject
     return "debug"
@@ -825,7 +877,8 @@ def build_graph() -> Any:
     builder.add_conditional_edges(
         "test",
         route_after_tester,
-        {"review": "review", "debug": "debug"},
+        # "code" covers both the next plan step and a missing test suite.
+        {"review": "review", "debug": "debug", "code": "code"},
     )
 
     builder.add_edge("debug", "test")

@@ -33,8 +33,13 @@ Produce a plan with these properties:
 1. Each step is atomic — one clear action (read file X, write function Y, add test Z)
 2. Steps are ordered — earlier steps don't depend on later steps
 3. Every step names the exact files to read and write
-4. The final step always includes running tests
-5. The plan is minimal — do not add steps that aren't necessary
+4. Every step carries a test_command that will actually collect the tests that
+   step produces. If a step writes code, an earlier or the same step must create
+   the tests that cover it.
+5. Never emit a step whose only action is running the tests. The Tester runs them
+   automatically after every step; a "verify the tests pass" step just makes the
+   Coder rewrite working files.
+6. The plan is minimal — do not add steps that aren't necessary
 
 Output your plan as structured JSON matching the ExecutionPlan schema.
 Do NOT start writing code — that is the Coder's job.

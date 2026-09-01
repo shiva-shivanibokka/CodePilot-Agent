@@ -8,6 +8,7 @@ Every inter-agent contract is a typed Pydantic model.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -114,6 +115,10 @@ class TestResult(BaseModel):
     output: str  # full pytest output
     duration_ms: int
     success: bool
+    # pytest exits 4 (path missing) or 5 (nothing collected) when there is no
+    # suite to run. That is not a failing test, and handing it to the Debugger
+    # means asking a model to root-cause a missing directory in application code.
+    no_tests: bool = False
 
     @property
     def summary(self) -> str:
@@ -200,9 +205,13 @@ class LLMCall(BaseModel):
             "claude-sonnet-5": (2.00e-6, 10.00e-6),
             "claude-haiku-4-5": (1.00e-6, 5.00e-6),
         }
-        if self.model not in pricing:
+        # Some models are only served under a dated id ("claude-haiku-4-5-20251001").
+        # Without stripping the date the lookup misses and every call of that model
+        # silently prices at zero — a cost ticker that reads $0.00 while spending.
+        key = re.sub(r"-\d{8}$", "", self.model)
+        if key not in pricing:
             return 0.0
-        in_price, out_price = pricing[self.model]
+        in_price, out_price = pricing[key]
         return (self.input_tokens * in_price) + (self.output_tokens * out_price)
 
 
@@ -254,6 +263,7 @@ class AgentState(BaseModel):
     max_reviews: int = 3
     max_cost_usd: float = 1.00      # hard ceiling for one session
     reviewer_approved: bool = False
+    reviewer_feedback: str | None = None  # last CHANGES_NEEDED reason, shown to the Coder
     needs_user_input: bool = False
     user_correction: str | None = None
 

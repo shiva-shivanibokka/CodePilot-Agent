@@ -159,6 +159,7 @@ class SubprocessSandbox:
             output=result.stdout + result.stderr,
             duration_ms=duration_ms,
             success=(failed == 0 and errors == 0 and result.exit_code == 0),
+            no_tests=(result.exit_code in (4, 5) and passed == 0 and failed == 0),
         )
 
     # ------------------------------------------------------------------
