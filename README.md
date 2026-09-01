@@ -233,7 +233,67 @@ the choice conditional on size rather than absolute, and this remains the
 weakest of the four experiments — it establishes that the old blanket advice
 was wrong for small files, not that it is wrong.
 
-<!-- RESULTS-3 -->
+### Experiment 3 — does an AST index beat plain text search?
+
+Same fifteen tasks, loop arm, one retrieval tool each.
+Raw: [`2026-09-01-2306-retrieval.json`](evals/results/).
+
+| | pass | cost per completed task | median calls | input from cache |
+|---|---|---|---|---|
+| `search` — regex over file contents | 15/15 | $0.0398 | 6 | 73% |
+| `find_symbol` — AST index: definition, callers, callees | 14/14 | $0.0432 | 6 | 73% |
+
+*One `find_symbol` run is excluded: the provider returned 529 before the agent
+took a turn. An outage is not a result.*
+
+**No difference worth claiming.** Both configurations solved every task they
+were allowed to attempt, and the 8.5% cost gap sits close enough to the 1–3.4%
+run-to-run variation measured in experiment 1 that a single sweep of fifteen
+tasks cannot separate them. The honest reading is that at this scale **an AST
+index buys nothing over grep** — which is worth saying, because indexing the
+codebase was this project's original headline feature.
+
+That earlier version was worse than useless: its call graph was keyed by bare
+function name, so two classes with a `setup` method silently overwrote each
+other, and nothing in the codebase read the graph at all. It has been repaired
+here — keyed by `file::qualname`, nested functions included, callers and
+callees returned together — and the repaired version still does not beat a
+regex on a four-file repository.
+
+**Where it should pay, and why this cannot show it.** A symbol index earns its
+keep when grep returns two hundred hits across a thousand files and you need
+the one definition plus its call sites. These fixtures have one to four files.
+The experiment establishes that the index is not free and not automatically
+better; it says nothing about a real codebase, and building a fixture large
+enough to test that is the obvious next piece of work.
+
+### Experiment 4 — model routing against effort tuning
+
+Wired and not run. The harness supports it:
+
+```bash
+python -m evals.runner --experiment effort
+```
+
+The question is whether the classic routing table — send cheap work to a weaker
+model — beats leaving one strong model in place and turning `effort` down, and
+it costs roughly $2 to answer. It is unrun rather than unreported: the number
+is not in this README because nobody has paid for it yet.
+
+---
+
+## Everything measured, in one place
+
+| claim | evidence |
+|---|---|
+| A fixed pipeline cost 4.2× the loop and passed no more tasks | experiment 1, 15/15 both arms, variance 1.0% |
+| Rewriting small files beats exact-string editing | experiment 2, 1.83× cheaper, 11 of 15 tasks |
+| An AST index does not beat grep on small repositories | experiment 3, difference within noise |
+| A prompt prefix under ~4k tokens silently does not cache | measured directly: 2,119 tokens caches on neither model, 7,239 caches fully |
+| Prompt caching serves ~75% of the loop's input | every run in experiments 1–3 |
+| Whole-file rewrites did not drop code at this file size | 0 of 30 runs, checked by name |
+
+Total spend to produce every number above: roughly $9 of API usage.
 
 ---
 
