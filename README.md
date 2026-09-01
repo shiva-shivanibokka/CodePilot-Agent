@@ -156,7 +156,50 @@ python -m evals.runner --experiment effort            # experiment 4
 Results land in [`evals/results/`](evals/results/) and are committed. Every
 number below links back to one.
 
-<!-- RESULTS -->
+### Experiment 1 — does the model choosing beat a fixed pipeline?
+
+Fifteen tasks, both arms, `claude-opus-5` at `effort=low`, 1 September 2026.
+Raw: [`2026-09-01-2210-arms.json`](evals/results/).
+
+| | pass | cost per completed task | median calls | median wall | input from cache |
+|---|---|---|---|---|---|
+| **loop** — the model chooses each step | 15/15 | **$0.042** | **6** | **22s** | **75%** |
+| **pipeline** — fixed plan/code/test/debug/review | 15/15 | $0.184 | 23 | 88s | 56% |
+
+**The pipeline bought nothing and cost 4.2× more.** Both arms solved every task,
+so the structure did not buy reliability at this difficulty; it bought a 4.19×
+median cost multiple (range 1.70×–8.27×) and four times the wall clock. The
+loop was cheaper on **15 of 15 tasks** — not on average, on every one.
+
+The gap widens as tasks get harder, which is the opposite of the usual argument
+for a pipeline:
+
+| tier | loop | pipeline | ratio |
+|---|---|---|---|
+| single-file | $0.041 | $0.125 | 3.0× |
+| multi-file | $0.048 | $0.201 | 4.2× |
+| debug an existing failure | $0.037 | $0.225 | **6.0×** |
+
+Two mechanisms explain most of it, and both are visible in the data. The
+pipeline re-derives its context every phase, so it makes ~4× the model calls.
+And each phase builds its own short system prompt, which falls below the
+model's minimum cacheable prefix — so it served 56% of its input from cache
+against the loop's 75%, on 68% more input tokens overall.
+
+**Is that gap real, or noise?** The loop arm was run twice on the same fifteen
+tasks: **$0.6331 and $0.6396 total (1.0% apart), 15/15 both times**, median
+per-task cost varying 3.4%. A 4.19× difference is roughly two orders of
+magnitude larger than the run-to-run variation, so it is not a sampling
+artifact. The pass rates, being identical, say nothing either way — fifteen
+tasks cannot distinguish two arms that both solve all of them, and this
+comparison should not be read as evidence that the loop is *more reliable*.
+
+**What this does not show.** Fifteen small Python tasks, one model, one effort
+setting, one day. Nothing here says a pipeline is a bad idea at a difficulty
+where the loop starts failing; it says that at this difficulty the structure is
+pure overhead.
+
+<!-- RESULTS-2 -->
 
 ---
 

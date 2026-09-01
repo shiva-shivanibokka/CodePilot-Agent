@@ -1,0 +1,351 @@
+{
+  "generated_at": "2026-09-01T22:16:27.101322+00:00",
+  "model": "claude-opus-5",
+  "experiment": "sweep",
+  "note": "Pass means the held-out tests passed. The agent never saw them; they are written after it finishes.",
+  "summary": {
+    "loop/low": {
+      "tasks": 15,
+      "passed": 15,
+      "pass_rate": 1.0,
+      "total_cost_usd": 0.6396,
+      "median_cost_usd": 0.042,
+      "cost_per_pass_usd": 0.0426,
+      "median_model_calls": 6,
+      "cache_read_tokens": 187020,
+      "input_tokens": 61714,
+      "runs_with_lost_code": 0,
+      "errors": 0,
+      "unpriced_calls": 0
+    }
+  },
+  "runs": [
+    {
+      "task": "empty-guard",
+      "tier": "single",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "2 passed",
+      "cost_usd": 0.040805,
+      "unpriced_calls": 0,
+      "input_tokens": 3741,
+      "output_tokens": 884,
+      "cache_read_tokens": 14546,
+      "model_calls": 7,
+      "wall_seconds": 21.4,
+      "stopped_by": "finished",
+      "files_edited": [
+        "stats.py",
+        "test_stats.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "off-by-one",
+      "tier": "single",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "3 passed",
+      "cost_usd": 0.043415,
+      "unpriced_calls": 0,
+      "input_tokens": 3788,
+      "output_tokens": 979,
+      "cache_read_tokens": 14546,
+      "model_calls": 7,
+      "wall_seconds": 29.6,
+      "stopped_by": "finished",
+      "files_edited": [
+        "slicing.py",
+        "test_slicing.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "case-insensitive",
+      "tier": "single",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "4 passed",
+      "cost_usd": 0.041835,
+      "unpriced_calls": 0,
+      "input_tokens": 3877,
+      "output_tokens": 898,
+      "cache_read_tokens": 12468,
+      "model_calls": 6,
+      "wall_seconds": 19.7,
+      "stopped_by": "finished",
+      "files_edited": [
+        "users.py",
+        "test_users.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "retry-backoff",
+      "tier": "single",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "2 passed",
+      "cost_usd": 0.054505,
+      "unpriced_calls": 0,
+      "input_tokens": 4106,
+      "output_tokens": 1359,
+      "cache_read_tokens": 12468,
+      "model_calls": 6,
+      "wall_seconds": 23.7,
+      "stopped_by": "finished",
+      "files_edited": [
+        "retry.py",
+        "test_retry.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "parse-duration",
+      "tier": "single",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "4 passed",
+      "cost_usd": 0.047145,
+      "unpriced_calls": 0,
+      "input_tokens": 3789,
+      "output_tokens": 1128,
+      "cache_read_tokens": 12468,
+      "model_calls": 6,
+      "wall_seconds": 27.8,
+      "stopped_by": "finished",
+      "files_edited": [
+        "duration.py",
+        "test_duration.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "extract-helper",
+      "tier": "multi",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "2 passed",
+      "cost_usd": 0.05015,
+      "unpriced_calls": 0,
+      "input_tokens": 5295,
+      "output_tokens": 947,
+      "cache_read_tokens": 14546,
+      "model_calls": 7,
+      "wall_seconds": 22.5,
+      "stopped_by": "finished",
+      "files_edited": [
+        "money.py",
+        "report.py",
+        "test_report.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "add-validation",
+      "tier": "multi",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "4 passed",
+      "cost_usd": 0.04197,
+      "unpriced_calls": 0,
+      "input_tokens": 4059,
+      "output_tokens": 867,
+      "cache_read_tokens": 12468,
+      "model_calls": 6,
+      "wall_seconds": 22.0,
+      "stopped_by": "finished",
+      "files_edited": [
+        "account.py",
+        "test_account.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "two-modules",
+      "tier": "multi",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "2 passed",
+      "cost_usd": 0.05339,
+      "unpriced_calls": 0,
+      "input_tokens": 5343,
+      "output_tokens": 1067,
+      "cache_read_tokens": 14546,
+      "model_calls": 7,
+      "wall_seconds": 28.0,
+      "stopped_by": "finished",
+      "files_edited": [
+        "text_utils.py",
+        "pages.py",
+        "test_text_utils.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "config-defaults",
+      "tier": "multi",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "3 passed",
+      "cost_usd": 0.04912,
+      "unpriced_calls": 0,
+      "input_tokens": 4839,
+      "output_tokens": 997,
+      "cache_read_tokens": 14546,
+      "model_calls": 7,
+      "wall_seconds": 20.7,
+      "stopped_by": "finished",
+      "files_edited": [
+        "config.py",
+        "test_config.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "cli-flag",
+      "tier": "multi",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "2 passed",
+      "cost_usd": 0.032145,
+      "unpriced_calls": 0,
+      "input_tokens": 3144,
+      "output_tokens": 657,
+      "cache_read_tokens": 12468,
+      "model_calls": 6,
+      "wall_seconds": 16.9,
+      "stopped_by": "finished",
+      "files_edited": [
+        "tool.py",
+        "test_tool.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "debug-mutation",
+      "tier": "debug",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "2 passed",
+      "cost_usd": 0.0377,
+      "unpriced_calls": 0,
+      "input_tokens": 4195,
+      "output_tokens": 669,
+      "cache_read_tokens": 10390,
+      "model_calls": 5,
+      "wall_seconds": 23.1,
+      "stopped_by": "finished",
+      "files_edited": [
+        "cart.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "debug-rounding",
+      "tier": "debug",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "3 passed",
+      "cost_usd": 0.046885,
+      "unpriced_calls": 0,
+      "input_tokens": 4512,
+      "output_tokens": 973,
+      "cache_read_tokens": 10390,
+      "model_calls": 5,
+      "wall_seconds": 22.8,
+      "stopped_by": "finished",
+      "files_edited": [
+        "invoice.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "debug-import",
+      "tier": "debug",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "2 passed",
+      "cost_usd": 0.03167,
+      "unpriced_calls": 0,
+      "input_tokens": 3964,
+      "output_tokens": 474,
+      "cache_read_tokens": 10390,
+      "model_calls": 5,
+      "wall_seconds": 17.6,
+      "stopped_by": "finished",
+      "files_edited": [
+        "pkg/core.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "debug-boundary",
+      "tier": "debug",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "4 passed",
+      "cost_usd": 0.031235,
+      "unpriced_calls": 0,
+      "input_tokens": 3432,
+      "output_tokens": 563,
+      "cache_read_tokens": 10390,
+      "model_calls": 5,
+      "wall_seconds": 22.5,
+      "stopped_by": "finished",
+      "files_edited": [
+        "chunk.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    },
+    {
+      "task": "debug-shared-default",
+      "tier": "debug",
+      "arm": "loop",
+      "config": "low",
+      "passed": true,
+      "held_out_summary": "2 passed",
+      "cost_usd": 0.03765,
+      "unpriced_calls": 0,
+      "input_tokens": 3630,
+      "output_tokens": 780,
+      "cache_read_tokens": 10390,
+      "model_calls": 5,
+      "wall_seconds": 28.3,
+      "stopped_by": "finished",
+      "files_edited": [
+        "registry.py"
+      ],
+      "survivors_lost": [],
+      "error": ""
+    }
+  ]
+}
