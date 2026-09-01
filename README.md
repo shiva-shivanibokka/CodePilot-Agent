@@ -1,252 +1,189 @@
-# CodePilot-Agent
+# CodePilot
 
-An autonomous coding agent that takes a natural language task, plans an implementation, writes code across multiple files, runs it in an isolated sandbox, debugs failures, and delivers working results — all streamed to you in real time.
+A small coding agent that edits real git repositories, built to find out how
+coding agents actually work — and to measure the design choices instead of
+asserting them.
 
-Built to demonstrate the same architecture used by production coding agents (Devin, SWE-agent, OpenDevin), with purpose-built solutions to their known failure modes.
+It reads your code, changes it by exact-string replacement, runs the tests, and
+checkpoints every turn to a git ref so `codepilot undo` puts things back. It
+runs on your machine, on your repositories, with your own API key.
+
+Built by Shivani Bokka.
+
+```
+$ codepilot run "mean() crashes on an empty list — make it raise ValueError, add
+                 type hints, and write the tests"
+
+⎘ checkpointed — `codepilot undo` reverts to here (24763a35)
+
+· I'll find the code first.
+🔧 list_files()
+🔧 search(pattern=def (mean|median), glob=*.py)
+📋 stats.py:4: def mean(values):
+🔧 read_file(path=stats.py)
+🔧 edit_file(path=stats.py, old="""Simple statistics hel…)
+  ± stats.py  +8 -2
+🔧 write_file(path=tests/test_stats.py, …)
+  ± tests/test_stats.py  +29 -0
+🔧 run_tests()
+🧪 6 passed (2983ms)
+✅ stats.py now raises ValueError with an explicit message on an empty
+   sequence, and both functions are annotated. 6 tests added, all passing.
+
+   One thing I did not change, since it was outside what you asked:
+   median() on an even-length list returns the upper of the two middle
+   elements rather than their average. Say the word and I'll fix it.
+
+  session efc97e9d6607 · $0.0574 / $0.60 · 6 calls
+  prompt cache: 10,090 tokens read (67% of input served from cache)
+  edited: stats.py, tests/test_stats.py
+  `codepilot undo` reverts this turn
+```
+
+That transcript is from a real run, lightly trimmed for width.
 
 ---
 
-## What It Does
+## Why this exists
 
-Describe what you want to build. The agent handles the rest:
+It is easy to build something that *looks* like a coding agent. This repository
+began as one: six named agents, a state graph, a sandbox, a live cost ticker, a
+README describing all of it. [`docs/`](docs/superpowers/specs/) has the design;
+the short version is that a line-by-line audit found the application had never
+been run. It raised `KeyError` on its first node transition, its plan pointer
+never advanced, its retry loop was unbounded, and one of the two model IDs it
+routed to had never existed.
 
-```
-You: "Write a FastAPI CRUD API for a todo list with SQLite persistence and full pytest coverage"
-
-Agent:
-  🤔 [orchestrator] Received request. Complexity: COMPLEX
-  📝 [planner] Execution plan (4 steps):
-       Step 1: Create database module with SQLite connection and models
-       Step 2: Write FastAPI routes for CRUD operations
-       Step 3: Write pytest test suite with fixtures
-       Step 4: Verify all tests pass
-  ➡️  [coder] Step 1: Create database module...
-  ✍️  Written: database.py (47 lines)
-  ➡️  [coder] Step 2: Write FastAPI routes...
-  ✍️  Written: main.py (89 lines)
-  ➡️  [coder] Step 3: Write test suite...
-  ✍️  Written: tests/test_api.py (63 lines)
-  🧪 [tester] Running: pytest tests/ -v --tb=short
-  📊 [tester] ❌ 7 passed, 1 failed — sending to Debugger
-  🔍 [debugger] Root cause: Missing Content-Type header in test fixture
-  🩹 [debugger] Patched: tests/test_api.py
-  🧪 [tester] Running: pytest tests/ -v --tb=short
-  📊 [tester] ✅ 8 passed, 0 failed (1.2s)
-  ✅ [reviewer] Approved: Implementation complete and correct
-  💰 Session cost: $0.0034 | 4,891 tokens
-```
+So the rebuild has one rule: **every claim in this README is either checkable
+from the code or backed by a committed results file.** Where something is
+untested, it says so.
 
 ---
 
-## Architecture
-
-### Multi-Agent System (LangGraph)
-
-```
-START → Orchestrator
-          ├── Task mode → Planner → Coder → Tester
-          │                              ↑        │
-          │                         (iterate)   pass│fail
-          │                                     │    ↓
-          │                             Reviewer  Debugger
-          │                              ↓
-          │                           DONE / loop back
-          └── Q&A mode → QA Agent → DONE
-```
-
-Six specialized agents, each with a focused system prompt and appropriate model:
-
-| Agent | Model | Responsibility |
-|---|---|---|
-| Orchestrator | Haiku/Sonnet | Intent classification, complexity routing, control flow |
-| Planner | Sonnet | AST-indexed codebase analysis, step-by-step ExecutionPlan |
-| Coder | Haiku/Sonnet | File writes per plan step, follows existing code style |
-| Tester | Haiku | Runs pytest, parses pass/fail, triggers Debugger on failure |
-| Debugger | Sonnet | Root cause analysis, targeted patch, max 3 iterations |
-| Reviewer | Sonnet | Validates output against original task, approves or loops back |
-
-### Execution Sandbox
-
-Every `run_code` and `run_tests` call executes inside an isolated environment:
-
-```
-Subprocess mode (default, no Docker needed):
-  Agent writes file → asyncio subprocess → stdout/stderr captured → result returned
-
-Docker mode (production):
-  Agent writes file → docker exec into container → 512MB RAM limit, 1 CPU,
-  no network, non-root user → result returned → container destroyed on session end
-```
-
-The `SandboxBackend` protocol means the agent never touches Docker or subprocess directly — both are swappable at config time.
-
-### Context Window Management
-
-The Planner queries the **AST Indexer** before any LLM call:
-- Parses every `.py` file into a structural index: functions, classes, call graph, imports
-- Identifies the 3-5 most relevant files for the current task via keyword overlap scoring
-- The Coder receives only those files — not the entire codebase
-- This prevents the #1 failure mode of coding agents: context window exhaustion
-
-### Model Routing
-
-```python
-routing_table = {
-    (Planner, any):       Sonnet,   # always plan carefully
-    (Coder, simple):      Haiku,    # pattern-based, fast
-    (Coder, complex):     Sonnet,   # architectural changes
-    (Tester, any):        Haiku,    # pytest output parsing
-    (Debugger, any):      Sonnet,   # root cause reasoning
-    (Reviewer, any):      Sonnet,   # correctness validation
-}
-```
-
-Every LLM call is logged with model, input/output tokens, latency, and cost. A live cost ticker shows in the UI.
-
-### Real-Time Streaming
-
-Every agent action emits an `AgentEvent` that streams to the Gradio UI via a generator. The user sees planning, coding, testing, and debugging as it happens — not just a result at the end.
-
-### Session Persistence (Redis)
-
-Full `AgentState` is serialised to Redis after every node with a 24-hour TTL. Sessions survive browser refreshes and can be resumed.
-
----
-
-## Stack
-
-| Component | Technology |
-|---|---|
-| Agent orchestration | LangGraph (stateful multi-agent graph) |
-| LLM | Claude Sonnet 4.5 + Claude Haiku 3.5 (model routing) |
-| Sandboxed execution | Docker SDK / asyncio subprocess |
-| AST indexing | Python `ast` stdlib + custom call graph builder |
-| API + streaming | FastAPI + WebSocket |
-| Session state | Redis (in-memory fallback) |
-| UI | Gradio (real-time generator streaming) |
-| Containerisation | Docker + docker-compose |
-
----
-
-## Local Setup
+## Install
 
 ```bash
 git clone https://github.com/shiva-shivanibokka/CodePilot-Agent
 cd CodePilot-Agent
 pip install -r requirements.txt
-cp .env.example .env   # add your ANTHROPIC_API_KEY
-python app.py          # opens at http://localhost:7860
+cp .env.example .env        # add your Anthropic API key
+codepilot doctor            # 16 checks that the install actually works
 ```
 
-No Docker required for local development — the agent runs in subprocess sandbox mode by default.
+`doctor` verifies the things that break silently: that git checkpointing works,
+that a process can be spawned and killed on your OS, that no tool schema leaks
+an object the model cannot serialise, and — with `--live` — that the configured
+models exist and the model really calls a tool.
 
-### Full Stack with Docker + Redis
+## Use
 
 ```bash
-cp .env.example .env   # add your ANTHROPIC_API_KEY
-docker-compose up --build
+codepilot run "add retry logic to fetch.py"   # one task
+codepilot chat                                 # a conversation
+codepilot undo                                 # revert the last turn
+codepilot sessions                             # what has run here
+codepilot export                               # turn a session into a replay
+python -m codepilot.webui                      # a local browser UI, if you prefer
 ```
 
-- Gradio UI: http://localhost:7860
-- FastAPI docs: http://localhost:8000/docs
-- Redis: localhost:6379
+In `chat`, Ctrl-C interrupts a running turn and hands control back rather than
+killing it; a second Ctrl-C forces the issue. `/undo`, `/cost` and `/session`
+work mid-conversation, and `--resume <id>` picks a session back up later.
 
-### Enable Docker Sandbox Mode
-
-For production-grade isolation, build the sandbox image first:
-
-```bash
-docker build -t codepilot-sandbox:latest sandbox/docker/
-```
-
-Then select **Docker** in the Gradio UI sandbox selector (or set `SANDBOX_TYPE=docker` in `.env`).
+A `CODEPILOT.md` at your repository root is injected into the system prompt —
+conventions, the test command, things to avoid.
 
 ---
 
-## Project Structure
+## How it works
 
 ```
-CodePilot-Agent/
-├── app.py                    # Gradio UI — entry point for local use
-├── models/
-│   └── schemas.py            # All Pydantic models: AgentState, AgentEvent,
-│                             #   ExecutionPlan, LLMCall, TestResult, etc.
+codepilot/
+├── llm.py         the only module that imports `anthropic`
+├── context.py     the conversation: history, compaction, cache breakpoints
+├── workspace.py   real files, containment, read-before-write, checkpoint/undo
+├── permissions.py one gate: command allowlist, budgets, test-file protection
+├── tools.py       10 tools, and the one place a tool call is executed
+├── indexer.py     AST index: symbols and a call graph keyed by file::qualname
+├── sandbox/       local (the tool) and docker (the eval)
 ├── agent/
-│   ├── graph.py              # LangGraph state graph — all nodes + edges
-│   └── prompts.py            # System prompts for each agent
-├── sandbox/
-│   ├── base.py               # SandboxBackend protocol
-│   ├── subprocess_sandbox.py # Local execution (no Docker)
-│   ├── docker_sandbox.py     # Isolated Docker container execution
-│   ├── factory.py            # create_sandbox() — selects backend by config
-│   └── docker/Dockerfile     # Sandbox container image
-├── tools/
-│   └── registry.py           # All agent tools: read_file, write_file,
-│                             #   run_code, run_tests, search_codebase, git_*
-├── indexer/
-│   └── ast_indexer.py        # Codebase AST parser + relevance scorer
-├── router/
-│   └── model_router.py       # Claude model selection by agent + complexity
-├── session/
-│   └── manager.py            # Redis session persistence (in-memory fallback)
-├── api/
-│   └── main.py               # FastAPI: POST /sessions, WS /ws/{id}, GET /health
-├── docker-compose.yml        # App + Redis
-├── Dockerfile                # Main app image
-├── requirements.txt
-└── .env.example
+│   ├── loop.py      ARM A — the model chooses each step
+│   └── pipeline.py  ARM B — a fixed plan/code/test/debug/review graph
+├── session.py     append-only JSONL, resumable
+├── replay.py      a session → a recording the web page plays
+└── cli.py
 ```
+
+**Two arms, one substrate.** The interesting question about a coding agent is
+whether the model should choose what to do next, or whether a fixed pipeline
+should choose for it. Both are built here, and they share the client, tools,
+sandbox, workspace, permissions, context and event stream — the control flow is
+the only difference, which is what makes comparing them mean anything.
+
+**Safety is one layer, not scattered.** Every tool call goes through the same
+gate: path containment, read-before-write, the command allowlist, the budget,
+and protection of test files during a debugging turn (editing the test until it
+passes is the most common way an agent reports success without fixing
+anything).
+
+**Nothing raises out of a tool.** An unknown tool, bad arguments, a refused
+command, a path escaping the repository — all come back as `tool_result` blocks
+the model reads and recovers from. A traceback ends a turn; an error message
+does not.
+
+**Undo is real.** Before each turn the working tree is written to
+`refs/codepilot/<session>/<n>` using a throwaway git index, so your staged work
+is never touched and `HEAD` never moves. `undo` restores the tree *and* removes
+files created since, because a restore that leaves them behind is not an undo.
 
 ---
 
-## API Usage
+## What is measured
 
-Start a session:
+Fifteen tasks, each a small repository plus a prompt plus a **held-out test file
+the agent never sees**. Pass means those tests pass afterwards. Asking the agent
+whether it succeeded measures its self-report; running tests it could not have
+written to measures the work.
+
 ```bash
-curl -X POST http://localhost:8000/sessions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_request": "Write a binary search function with type hints and docstring",
-    "mode": "task",
-    "sandbox_type": "subprocess",
-    "anthropic_api_key": "sk-ant-..."
-  }'
-
-# Response: {"session_id": "abc123", "ws_url": "/ws/abc123"}
+python -m evals.runner --dry-run                      # free: do the fixtures measure anything?
+python -m evals.runner --arms loop pipeline           # experiment 1
+python -m evals.runner --experiment edit-style        # experiment 2
+python -m evals.runner --experiment retrieval         # experiment 3
+python -m evals.runner --experiment effort            # experiment 4
 ```
 
-Stream events via WebSocket:
-```python
-import asyncio, websockets, json
+Results land in [`evals/results/`](evals/results/) and are committed. Every
+number below links back to one.
 
-async def watch():
-    async with websockets.connect("ws://localhost:8000/ws/abc123") as ws:
-        async for msg in ws:
-            event = json.loads(msg)
-            if event.get("type") == "done":
-                break
-            print(event.get("message", ""))
-
-asyncio.run(watch())
-```
-
-Poll for result:
-```bash
-curl http://localhost:8000/sessions/abc123
-```
+<!-- RESULTS -->
 
 ---
 
-## What This Demonstrates
+## Things this does not do
 
-| System design concept | Where it appears |
-|---|---|
-| Sandboxed code execution | `sandbox/docker_sandbox.py` — Docker with memory/CPU/network limits |
-| Protocol-based abstraction | `SandboxBackend` — DockerSandbox and SubprocessSandbox are interchangeable |
-| Multi-agent state machine | `agent/graph.py` — LangGraph with conditional edges and shared state |
-| Context window management | `indexer/ast_indexer.py` — AST-based relevance scoring, not full file loading |
-| Intelligent model routing | `router/model_router.py` — cost/quality tradeoff per agent and task |
-| Real-time event streaming | `api/main.py` WebSocket + Gradio generator in `app.py` |
-| Session persistence | `session/manager.py` — Redis with in-memory fallback |
-| Self-healing debug loop | `agent/graph.py` — Tester → Debugger → Tester cycle with iteration cap |
-| Structured inter-agent contracts | `models/schemas.py` — Pydantic validation at every node boundary |
+- **It is not hosted, and will not be.** It runs shell commands and edits files;
+  exposing that publicly means running commands for strangers. The public
+  artefact is a [replay](web/) of real recorded sessions.
+- **Anthropic only.** Prompt caching and tool-use semantics are where providers
+  differ most, and an abstraction that satisfies all of them drops the caching —
+  which is the difference between an agent that is affordable to iterate with
+  and one that is not. The seam is one file if that changes.
+- **Python tasks only** in the eval, because the sandbox runs pytest. The agent
+  itself is not language-specific.
+- **No GitHub issue → PR mode.** The original modelled it in five state fields
+  and implemented none of it; those fields are gone rather than left as an API
+  that silently does something else.
+
+## Development
+
+```bash
+pytest -q                    # 123 tests, no API key needed
+ruff check .
+python -m codepilot.doctor   # wiring checks
+```
+
+The tests use a stubbed model, so the whole suite runs offline in about twenty
+seconds. `doctor` covers what unit tests structurally cannot — it found a pytest
+parser that read every `-q` run as zero passed, and an `undo` that staged what it
+restored, both while the suite was green.

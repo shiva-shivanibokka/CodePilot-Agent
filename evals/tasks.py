@@ -400,22 +400,39 @@ TASKS: list[Task] = [
                 "def chunks(items, size):\n"
                 "    return [items[i:i + size] for i in range(0, len(items), size)]\n"
             ),
+            # A negative size makes range() empty, so this returns [] instead of
+            # raising and the visible test genuinely fails. The zero case raises
+            # on its own — range() rejects a zero step — so it is NOT the bug.
             "tests/test_chunk.py": (
-                "import pytest\nfrom chunk import chunks\n\n"
-                "def test_even():\n    assert chunks([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]\n\n"
-                "def test_size_zero_raises():\n"
-                "    with pytest.raises(ValueError):\n        chunks([1, 2], 0)\n"
+                "import pytest\n"
+                "from chunk import chunks\n"
+                "\n"
+                "def test_even():\n"
+                "    assert chunks([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]\n"
+                "\n"
+                "def test_negative_size_raises():\n"
+                "    with pytest.raises(ValueError):\n"
+                "        chunks([1, 2], -1)\n"
             ),
         },
         held_out={
             HELD_OUT: (
-                "import pytest\nfrom chunk import chunks\n\n"
-                "def test_uneven():\n    assert chunks([1, 2, 3], 2) == [[1, 2], [3]]\n\n"
-                "def test_empty():\n    assert chunks([], 3) == []\n\n"
+                "import pytest\n"
+                "from chunk import chunks\n"
+                "\n"
+                "def test_uneven():\n"
+                "    assert chunks([1, 2, 3], 2) == [[1, 2], [3]]\n"
+                "\n"
+                "def test_empty():\n"
+                "    assert chunks([], 3) == []\n"
+                "\n"
                 "def test_zero():\n"
-                "    with pytest.raises(ValueError):\n        chunks([1], 0)\n\n"
+                "    with pytest.raises(ValueError):\n"
+                "        chunks([1], 0)\n"
+                "\n"
                 "def test_negative():\n"
-                "    with pytest.raises(ValueError):\n        chunks([1], -1)\n"
+                "    with pytest.raises(ValueError):\n"
+                "        chunks([1], -1)\n"
             )
         },
     ),

@@ -354,9 +354,30 @@ async def _dry_run(tasks: list[Task]) -> int:
                 path = tmp / rel
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding="utf-8")
-            outcome = await LocalSandbox(root=tmp).run_tests(f"pytest {HELD_OUT} -q")
+            sandbox = LocalSandbox(root=tmp)
+            outcome = await sandbox.run_tests(f"pytest {HELD_OUT} -q")
+            problems = []
             if outcome.success:
-                print(f"  [BAD ] {task.id}: held-out tests already pass on the fixture")
+                problems.append("held-out tests already pass on the untouched fixture")
+
+            # A debug task whose visible suite is already green is telling the
+            # agent something untrue. One such task cost a run: the agent read
+            # the code, found nothing failing, said so, and was scored a
+            # failure for being right.
+            if task.tier == "debug" and any(
+                rel.startswith("tests/") for rel in task.files
+            ):
+                visible = [rel for rel in task.files if rel.startswith("tests/")]
+                own = await sandbox.run_tests(f"pytest {' '.join(visible)} -q")
+                if own.success:
+                    problems.append(
+                        "a debug task whose own suite already passes — the prompt "
+                        "says it fails, so the premise is false"
+                    )
+
+            if problems:
+                for problem in problems:
+                    print(f"  [BAD ] {task.id}: {problem}")
                 bad += 1
             else:
                 print(f"  [ok  ] {task.id}: {outcome.summary} before the agent runs")
