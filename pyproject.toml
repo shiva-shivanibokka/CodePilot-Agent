@@ -1,0 +1,15 @@
+[project]
+name = "codepilot"
+version = "0.2.0"
+description = "A small coding agent that edits real repositories."
+requires-python = ">=3.11"
+
+[project.scripts]
+codepilot = "codepilot.cli:main"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "S110", "S112", "UP"]
+ignore = ["E501"]
+
+[tool.ruff]
+line-length = 100

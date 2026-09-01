@@ -103,13 +103,19 @@ class Conversation:
         self.messages.append({"role": "user", "content": text})
 
     def assistant(self, content: list[Any]) -> None:
-        """Append the reply's raw content blocks, not just its text.
+        """Append the reply's content blocks, not just its text.
 
         Thinking blocks have to round-trip unmodified, and tool_use blocks are
         what the following tool_result blocks refer to by id. Flattening to a
         string loses both.
+
+        SDK block objects are converted to plain dicts here rather than stored
+        as-is. The API accepts either, but only dicts survive being written to
+        a session file and read back: `json.dumps(default=str)` turns a block
+        into its repr, so a resumed conversation would carry the string
+        "TextBlock(citations=None, text=…)" where a message should be.
         """
-        self.messages.append({"role": "assistant", "content": content})
+        self.messages.append({"role": "assistant", "content": _as_plain(content)})
 
     def tool_results(self, results: list[dict[str, Any]]) -> None:
         """All results for one assistant turn, in a single user message.
@@ -211,6 +217,23 @@ class Conversation:
         while index < len(self.messages) and _is_tool_result(self.messages[index]):
             index += 1
         return index
+
+
+def _as_plain(content: list[Any]) -> list[dict[str, Any]]:
+    """Convert SDK content blocks to JSON-serialisable dicts.
+
+    `exclude_none` keeps the blocks tidy and avoids sending nulls back for
+    fields the model never set.
+    """
+    plain: list[dict[str, Any]] = []
+    for block in content:
+        if isinstance(block, dict):
+            plain.append(block)
+        elif hasattr(block, "model_dump"):
+            plain.append(block.model_dump(mode="json", exclude_none=True))
+        else:  # pragma: no cover - defensive; every current block is one of the above
+            plain.append({"type": "text", "text": str(block)})
+    return plain
 
 
 def _is_tool_result(message: dict[str, Any]) -> bool:

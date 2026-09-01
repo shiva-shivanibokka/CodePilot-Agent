@@ -145,3 +145,67 @@ def test_list_files_honours_gitignore(tmp_path):
     listed = ws.list_files()
     assert "visible.py" in listed
     assert "secret.txt" not in listed
+
+
+def test_undo_does_not_stage_anything(tmp_path):
+    """`git checkout <commit> -- .` writes to the index too, staging work the
+    user never staged. Undo must touch the worktree only."""
+    ws = _git_repo(tmp_path)
+    ws.checkpoint("before")
+    ws.read("keep.py")
+    ws.write("keep.py", "original = 2\n")
+    ws.undo()
+
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=tmp_path, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert staged == "", f"undo staged: {staged!r}"
+
+
+def test_undo_removes_directories_it_emptied(tmp_path):
+    ws = _git_repo(tmp_path)
+    ws.checkpoint("before")
+    ws.write("tests/test_new.py", "def test_x():\n    assert True\n")
+    assert (tmp_path / "tests").is_dir()
+    ws.undo()
+    assert not (tmp_path / "tests").exists(), "an emptied directory was left behind"
+
+
+def test_checkpoints_are_recoverable_in_a_fresh_process(tmp_path):
+    """`codepilot undo` runs later, with no in-memory checkpoint list."""
+    ws = _git_repo(tmp_path)
+    ws.checkpoint("first")
+    ws.read("keep.py")
+    ws.write("keep.py", "original = 5\n")
+
+    reopened = Workspace(root=tmp_path, session_id="test")
+    assert reopened.load_checkpoints(), "checkpoints were not recoverable from refs"
+    reopened.undo()
+    assert (tmp_path / "keep.py").read_text() == "original = 1\n"
+
+
+def test_undo_prunes_a_directory_left_holding_only_build_artifacts(tmp_path):
+    """`tests/` surviving an undo reads as a failed undo, even when the test
+    file itself is gone and only __pycache__ remains."""
+    ws = _git_repo(tmp_path)
+    ws.checkpoint("before")
+    ws.write("tests/test_new.py", "def test_x():\n    assert True\n")
+    cache = tmp_path / "tests" / "__pycache__"
+    cache.mkdir()
+    (cache / "test_new.cpython-312.pyc").write_bytes(b"\x00")
+
+    ws.undo()
+    assert not (tmp_path / "tests").exists()
+
+
+def test_undo_never_deletes_the_session_log(tmp_path):
+    """The log survived by accident of ordering; it must survive by design."""
+    ws = _git_repo(tmp_path)
+    ws.checkpoint("before")
+    log = tmp_path / ".codepilot" / "sessions" / "abc.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text('{"kind":"meta"}\n', encoding="utf-8")
+
+    ws.undo()
+    assert log.exists(), "undo erased the record of what it undid"

@@ -256,6 +256,80 @@ async def _context_prefix() -> str:
     return "cache breakpoint placed once, prefix stable across turns"
 
 
+async def _loop_terminates() -> str:
+    """A loop that never calls finish must still stop, and stop cheaply."""
+    import tempfile as _tf
+
+    from codepilot.agent.loop import AgentLoop, new_conversation
+    from codepilot.events import EventStream
+    from codepilot.llm import Reply, ToolCall, Usage
+    from codepilot.permissions import Budget, PermissionGate
+    from codepilot.sandbox.local import LocalSandbox
+    from codepilot.tools import ToolContext
+    from codepilot.workspace import Workspace
+
+    class Endless:
+        model = "stub"
+        calls = 0
+
+        async def chat(self, messages, **kw):
+            Endless.calls += 1
+            return Reply(
+                text="", content=[], stop_reason="tool_use",
+                tool_calls=[ToolCall(id="t", name="list_files", arguments={})],
+                model="stub", usage=Usage(input_tokens=10, output_tokens=10),
+                latency_ms=1, cost_usd=0.01,
+            )
+
+        async def count_tokens(self, messages, **kw):
+            return 10
+
+    with _tf.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        stream = EventStream(session_id="doctor")
+        ctx = ToolContext(
+            workspace=Workspace(root=root),
+            sandbox=LocalSandbox(root=root),
+            permissions=PermissionGate(auto_approve=True),
+            events=stream,
+        )
+        budget = Budget(max_usd=0.05, max_turns=1000)
+        loop = AgentLoop(Endless(), ctx, new_conversation(), budget, effort=None)
+        result = await loop.run("never finish")
+    if result.stopped_by != "budget":
+        raise RuntimeError(f"stopped by {result.stopped_by!r}, expected the budget")
+    return f"an endless loop stopped at the ceiling after {result.steps} calls"
+
+
+async def _session_round_trip() -> str:
+    """A resumed conversation must contain messages, not their reprs."""
+    import tempfile as _tf
+
+    from pydantic import BaseModel
+
+    from codepilot.context import Conversation
+    from codepilot.session import SessionStore
+
+    class Block(BaseModel):
+        type: str = "text"
+        text: str = "remembered"
+
+    with _tf.TemporaryDirectory() as tmp:
+        store = SessionStore.create(Path(tmp))
+        convo = Conversation(system_prompt="S")
+        convo.user("a task")
+        convo.assistant([Block()])
+        store.record_messages(convo.messages)
+
+        restored = SessionStore.create(Path(tmp), store.session_id).messages()
+        if len(restored) != 2:
+            raise RuntimeError(f"expected 2 messages, got {len(restored)}")
+        block = restored[1]["content"][0]
+        if not isinstance(block, dict) or block.get("text") != "remembered":
+            raise RuntimeError(f"content block did not survive: {block!r}")
+    return "messages and content blocks survive save -> load"
+
+
 async def _api_key() -> str:
     key = os.getenv("ANTHROPIC_API_KEY", "")
     if not key:
@@ -314,6 +388,10 @@ async def run(live: bool = False) -> int:
     print("\nTools")
     await doctor.check("schemas are model-safe", _tool_schemas)
     await doctor.check("execution and error handling", _tool_execution)
+
+    print("\nAgent")
+    await doctor.check("loop stops at the budget", _loop_terminates)
+    await doctor.check("session save and resume", _session_round_trip)
 
     print("\nAPI" + ("" if live else "  (--live to include billed checks)"))
     await doctor.check("api key", _api_key)

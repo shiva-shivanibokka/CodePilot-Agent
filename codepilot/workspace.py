@@ -29,7 +29,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 #: Directories never worth showing an agent, even if git would list them.
-ALWAYS_SKIP = {".git", "__pycache__", "node_modules", ".venv", "venv", ".mypy_cache"}
+ALWAYS_SKIP = {
+    ".git", "__pycache__", "node_modules", ".venv", "venv",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache",
+}
+
+#: Where codepilot keeps its own session logs. Never restored, never deleted:
+#: the record of what happened must outlive an undo of what happened.
+STATE_DIR = ".codepilot"
 
 
 class WorkspaceError(RuntimeError):
@@ -110,6 +117,32 @@ class Workspace:
         self._checkpoints.append(cp)
         return cp
 
+    def load_checkpoints(self) -> list[Checkpoint]:
+        """Recover this session's checkpoints from git refs.
+
+        `codepilot undo` runs in a fresh process, so the in-memory list is
+        empty. Reading the refs back means undo has one implementation rather
+        than a second, less careful one in the CLI.
+        """
+        if not self.is_git_repo:
+            return []
+        out = self._git(
+            "for-each-ref", "--format=%(refname) %(objectname)",
+            f"refs/codepilot/{self.session_id}",
+        )
+        found: list[tuple[int, Checkpoint]] = []
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            ref, commit = line.split()
+            try:
+                index = int(ref.rsplit("/", 1)[-1])
+            except ValueError:
+                continue
+            found.append((index, Checkpoint(ref=ref, commit=commit, label=ref)))
+        self._checkpoints = [cp for _, cp in sorted(found)]
+        return self._checkpoints
+
     def undo(self) -> Checkpoint | None:
         """Restore the most recent checkpoint's tree.
 
@@ -125,12 +158,49 @@ class Workspace:
             if line.strip()
         }
         for rel in self.list_files():
+            # Never delete our own session log. It survived until now only
+            # because it happened to predate the checkpoint; a session file
+            # created after one would otherwise be erased by its own undo.
+            if rel.startswith(f"{STATE_DIR}/"):
+                continue
             if rel not in in_tree:
                 (self.root / rel).unlink(missing_ok=True)
-        # `-- .` restricts the checkout to the worktree, leaving HEAD alone.
-        self._git("checkout", cp.commit, "--", ".")
+        self._prune_empty_dirs()
+        # `restore --worktree` and not `checkout <commit> -- .`: the latter
+        # writes the restored paths into the index too, which would stage work
+        # the user never staged — the exact thing checkpoint() avoids.
+        #
+        # Excluding STATE_DIR matters as much as not deleting it. The checkpoint
+        # is taken at the start of a turn, when the session log holds only its
+        # first line, so restoring it truncates the record of the very turn
+        # being undone.
+        self._git(
+            "restore", "--source", cp.commit, "--worktree",
+            "--", ".", f":(exclude){STATE_DIR}",
+        )
         self._read_ledger.clear()
         return cp
+
+    def _prune_empty_dirs(self) -> None:
+        """Remove directories the undo emptied.
+
+        A directory holding nothing but build artifacts counts as empty: an
+        agent that created `tests/` leaves `tests/__pycache__` behind after
+        running the suite, and a `tests/` that survives an undo reads as a
+        failed undo even though the test file itself is gone.
+        """
+        import shutil
+
+        for path in sorted(self.root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            if not path.is_dir() or ".git" in path.parts or STATE_DIR in path.parts:
+                continue
+            remaining = list(path.iterdir())
+            if not remaining:
+                path.rmdir()
+            elif all(child.name in ALWAYS_SKIP for child in remaining):
+                for child in remaining:
+                    shutil.rmtree(child, ignore_errors=True)
+                path.rmdir()
 
     # ------------------------------------------------------------------
     # Paths
