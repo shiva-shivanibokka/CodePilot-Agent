@@ -129,10 +129,12 @@ async def read_file(ctx: ToolContext, path: str) -> str:
 
 @tool(
     "edit_file",
-    "Replace an exact string in a file. Prefer this over write_file: it costs "
-    "tokens proportional to the change rather than to the file, and it cannot "
-    "silently drop code you did not reproduce. `old` must match byte for byte, "
-    "whitespace included, and must be unique unless replace_all is true.",
+    "Replace an exact string in a file. Use this for any file long enough that "
+    "rewriting it would cost more than the change: it costs tokens proportional "
+    "to the edit, and it cannot silently drop code you did not reproduce. For a "
+    "very short file, write_file is cheaper — matching exactly costs more than "
+    "retyping twenty lines. `old` must match byte for byte, whitespace included, "
+    "and must be unique unless replace_all is true.",
     {
         "path": {"type": "string"},
         "old": {"type": "string", "description": "Exact text to replace"},

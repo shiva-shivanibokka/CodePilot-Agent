@@ -61,6 +61,10 @@ class RunResult:
     files_edited: list[str] = field(default_factory=list)
     survivors_lost: list[str] = field(default_factory=list)
     error: str = ""
+    #: True when the run died to the provider being unavailable rather than to
+    #: anything the agent did. Counting a 529 as a failed task is the same
+    #: mistake as averaging an unreachable judge's zero in as a verdict.
+    infra_error: bool = False
 
 
 def _init_repo(root: Path, files: dict[str, str]) -> None:
@@ -76,6 +80,20 @@ def _init_repo(root: Path, files: dict[str, str]) -> None:
         ["git", "commit", "-qm", "task fixture"],
     ):
         subprocess.run(cmd, cwd=root, capture_output=True, check=False)
+
+
+#: Provider-side failures. The agent never got a turn, so the run says nothing
+#: about the agent.
+INFRASTRUCTURE = (
+    "overloaded_error", "OverloadedError", "RateLimitError",
+    "APIConnectionError", "APITimeoutError", "InternalServerError",
+    "Error code: 429", "Error code: 5",
+)
+
+
+def _is_infrastructure(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    return any(marker in text for marker in INFRASTRUCTURE)
 
 
 def _check_survivors(root: Path, task: Task) -> list[str]:
@@ -116,6 +134,7 @@ async def run_one(
         budget = Budget(max_usd=max_cost, max_turns=60)
         client = LLMClient(model=model)
         error, stopped_by, edited = "", "", []
+        infra = False
 
         try:
             if arm == "pipeline":
@@ -141,6 +160,7 @@ async def run_one(
                 stopped_by, edited = result.stopped_by, result.edited
         except Exception as exc:  # noqa: BLE001 - one bad task must not end the sweep
             error, stopped_by = f"{type(exc).__name__}: {exc}", "error"
+            infra = _is_infrastructure(exc)
 
         # Only now do the held-out tests exist.
         for rel, content in task.held_out.items():
@@ -168,6 +188,7 @@ async def run_one(
             files_edited=edited,
             survivors_lost=_check_survivors(tmp, task),
             error=error,
+            infra_error=infra,
         )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -185,10 +206,18 @@ def summarise(results: list[RunResult]) -> dict:
 
     summary = {}
     for (arm, config), rows in sorted(groups.items()):
+        # A run the provider refused to serve is excluded rather than scored.
+        # Keeping it would make an outage look like a worse agent.
+        infra = [r for r in rows if r.infra_error]
+        rows = [r for r in rows if not r.infra_error]
+        if not rows:
+            summary[f"{arm}/{config}"] = {"tasks": 0, "excluded_api_unavailable": len(infra)}
+            continue
         passed = [r for r in rows if r.passed]
         costs = [r.cost_usd for r in rows]
         summary[f"{arm}/{config}"] = {
             "tasks": len(rows),
+            "excluded_api_unavailable": len(infra),
             "passed": len(passed),
             "pass_rate": round(len(passed) / len(rows), 3) if rows else 0.0,
             "total_cost_usd": round(sum(costs), 4),
@@ -216,14 +245,27 @@ def render(results: list[RunResult], summary: dict) -> str:
         "-" * 104,
     ]
     for r in sorted(results, key=lambda x: (x.task, x.arm, x.config)):
-        mark = "yes" if r.passed else "no"
-        flag = "  !lost-code" if r.survivors_lost else ("  !error" if r.error else "")
+        mark = "n/a" if r.infra_error else ("yes" if r.passed else "no")
+        flag = (
+            "  !api-unavailable" if r.infra_error
+            else "  !lost-code" if r.survivors_lost
+            else "  !error" if r.error
+            else ""
+        )
         lines.append(
             f"{r.task:<22} {r.tier:<7} {r.arm:<9} {r.config:<12} {mark:<5} "
             f"${r.cost_usd:<8.4f} {r.model_calls:<6} {r.wall_seconds:<6.1f} {r.stopped_by}{flag}"
         )
     lines += ["", "summary", "-" * 104]
     for key, s in summary.items():
+        # Guard first: a configuration where every run hit an outage carries
+        # none of the keys below.
+        if not s["tasks"]:
+            lines.append(
+                f"{key:<24} no scorable runs "
+                f"({s['excluded_api_unavailable']} excluded: API unavailable)"
+            )
+            continue
         cache_pct = (
             100 * s["cache_read_tokens"] / (s["input_tokens"] + s["cache_read_tokens"])
             if (s["input_tokens"] + s["cache_read_tokens"])
@@ -237,6 +279,11 @@ def render(results: list[RunResult], summary: dict) -> str:
             f"total ${s['total_cost_usd']:.4f}  per pass {per_pass}  "
             f"median {s['median_model_calls']:.0f} calls  cache {cache_pct:.0f}%"
         )
+        if s.get("excluded_api_unavailable"):
+            lines.append(
+                f"{'':<24} note: {s['excluded_api_unavailable']} run(s) excluded — the "
+                "provider was unavailable, which says nothing about the agent"
+            )
         if s["unpriced_calls"]:
             lines.append(
                 f"{'':<24} note: {s['unpriced_calls']} call(s) had no published "

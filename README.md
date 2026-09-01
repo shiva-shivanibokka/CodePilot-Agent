@@ -4,7 +4,7 @@ A small coding agent that edits real git repositories, built to find out how
 coding agents actually work — and to measure the design choices instead of
 asserting them.
 
-It reads your code, changes it by exact-string replacement, runs the tests, and
+It reads your code, edits it, runs the tests, and
 checkpoints every turn to a git ref so `codepilot undo` puts things back. It
 runs on your machine, on your repositories, with your own API key.
 
@@ -199,7 +199,41 @@ setting, one day. Nothing here says a pipeline is a bad idea at a difficulty
 where the loop starts failing; it says that at this difficulty the structure is
 pure overhead.
 
-<!-- RESULTS-2 -->
+### Experiment 2 — exact-string edits, or rewrite the file?
+
+Same fifteen tasks, loop arm, one tool removed from each configuration.
+Raw: [`2026-09-01-2231-edit-style.json`](evals/results/).
+
+| | pass | cost per completed task | median calls | input tokens | input from cache |
+|---|---|---|---|---|---|
+| `edit_file` only | 15/15 | $0.087 | 8 | 147,422 | 58% |
+| `write_file` only | 15/15 | **$0.044** | **6** | **62,520** | **69%** |
+
+**This contradicted the design, and the design was changed.** The agent's prompt
+used to say "prefer `edit_file`" flatly, on the reasoning that an exact-string
+replacement costs tokens proportional to the change rather than to the file.
+That reasoning is sound and the measurement says it does not apply here:
+rewriting was **1.83× cheaper** at the median and cheaper on 11 of 15 tasks.
+
+The mechanism is file size. These fixtures are 2–15 lines. Editing one costs a
+`read_file` plus an exact-match string that must reproduce whitespace byte for
+byte, and a failed match costs a retry — more than simply retyping ten lines.
+The token-proportionality argument only starts paying when the file is bigger
+than the round trip needed to edit it.
+
+The safety argument did not show up either: **zero of thirty runs deleted code
+that was supposed to survive**, checked by name against the fixture. Whole-file
+rewriting is supposed to drop siblings the model forgot to reproduce; at ten
+lines, there is nothing to forget.
+
+**So the eval does not test the regime the advice was written for.** Nothing
+here measures a 400-line file, which is where the argument for `edit_file`
+lives and where a dropped function would actually hurt. The prompt now makes
+the choice conditional on size rather than absolute, and this remains the
+weakest of the four experiments — it establishes that the old blanket advice
+was wrong for small files, not that it is wrong.
+
+<!-- RESULTS-3 -->
 
 ---
 

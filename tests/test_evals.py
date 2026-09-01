@@ -97,3 +97,46 @@ def test_summary_reports_no_cost_per_pass_when_nothing_passed():
 def test_summary_surfaces_unpriced_calls_so_a_total_is_not_read_as_exact():
     s = summarise([_result(unpriced_calls=2)])["loop/low"]
     assert s["unpriced_calls"] == 2
+
+
+def test_a_provider_outage_is_excluded_not_scored_as_a_failure():
+    """A 529 means the agent never got a turn. Counting it as a failed task is
+    the same error as averaging an unreachable judge's zero in as a verdict."""
+    results = [
+        _result(task="a", passed=True),
+        _result(task="b", passed=False, infra_error=True, stopped_by="error",
+                error="OverloadedError: Error code: 529"),
+    ]
+    s = summarise(results)["loop/low"]
+    assert s["tasks"] == 1, "the outage was counted in the denominator"
+    assert s["pass_rate"] == 1.0
+    assert s["excluded_api_unavailable"] == 1
+
+
+def test_the_exclusion_is_reported_not_hidden():
+    from evals.runner import render
+
+    results = [_result(passed=False, infra_error=True, error="Error code: 529")]
+    text = render(results, summarise(results))
+    assert "API unavailable" in text
+    assert "api-unavailable" in text
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("OverloadedError: Error code: 529 - overloaded_error"),
+        RuntimeError("Error code: 429 - rate_limit_error"),
+        RuntimeError("APIConnectionError: connection reset"),
+    ],
+)
+def test_provider_failures_are_recognised(exc):
+    from evals.runner import _is_infrastructure
+
+    assert _is_infrastructure(exc)
+
+
+def test_an_agent_bug_is_not_mistaken_for_an_outage():
+    from evals.runner import _is_infrastructure
+
+    assert not _is_infrastructure(ValueError("that text does not appear in the file"))

@@ -23,9 +23,12 @@ Your edits are real: they land in their working tree, not a sandbox copy.
 2. **Plan when it is worth planning.** For anything spanning more than one
    file, call `propose_plan` first with the concrete steps. Skip it for a
    one-line change; a plan for trivial work is noise.
-3. **Prefer `edit_file` to `write_file`.** An exact-string replacement costs
-   tokens proportional to the change rather than the file, and cannot silently
-   drop code you failed to reproduce. Use `write_file` for new files.
+3. **Match the edit to the file.** `edit_file` costs tokens proportional to
+   the change and cannot silently drop code you failed to reproduce, so it is
+   the right tool for anything of real size. On a file of a few lines,
+   `write_file` is cheaper — matching an exact string costs more than retyping
+   it — and there is little for a rewrite to lose. Use `write_file` for new
+   files either way.
 4. **Run the tests.** `run_tests` after your changes, every time. If there is
    no suite, write one — a missing suite is work to do, not an error to debug.
 5. **Fix the code, not the test.** If a test fails, the test is usually right.
