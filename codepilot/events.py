@@ -12,16 +12,19 @@ Nothing here imports the agent, the sandbox, or a provider SDK.
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+log = logging.getLogger(__name__)
 
-class EventType(str, Enum):
+
+class EventType(StrEnum):
     # lifecycle
     SESSION_START = "session_start"
     TURN_START = "turn_start"
@@ -163,7 +166,10 @@ class EventStream:
             try:
                 fn(event)
             except Exception:  # noqa: BLE001 - a broken renderer must not stop work
-                pass
+                # Logged rather than swallowed: a subscriber that throws every
+                # time is invisible otherwise, and the agent keeps working while
+                # nothing is being displayed.
+                log.warning("event subscriber %r failed", fn, exc_info=True)
         return event
 
     def to_jsonl(self) -> str:

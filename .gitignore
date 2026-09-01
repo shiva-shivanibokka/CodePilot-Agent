@@ -1,18 +1,25 @@
-# Python
+# Build artefacts
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments
 .venv/
 venv/
 .env
 
-# Temp sandbox directories
-/tmp/codepilot_*/
+# codepilot session logs — local history, not source
+.codepilot/
 
-# IDE
+# Audit scratch, deleted once acted on
+AUDIT.md
+PLAN.md
+
+# IDE / OS
 .vscode/
 .idea/
-
-# OS
 .DS_Store
 Thumbs.db

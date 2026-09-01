@@ -1,27 +1,16 @@
-# Core agent
+# Core
 anthropic>=0.40.0
 langgraph>=0.2.0
-langchain-anthropic>=0.3.0
-
-# API & serving
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-websockets>=12.0
+langchain-core>=0.3.0
 pydantic>=2.7.0
+python-dotenv>=1.0.0
 
-# UI
-gradio>=6.0,<7.0    # 5.x lacks type="messages"; the floor must match the API we call
+# Local browser UI (optional; the CLI is the primary interface)
+gradio>=6.0,<7.0
 
-# Sandbox
-docker>=7.0.0          # optional — only needed for Docker sandbox mode
+# Hermetic sandbox for the eval harness (optional)
+docker>=7.0.0
 
-# Session persistence
-redis>=5.0.0           # optional — falls back to in-memory if not installed
-
-# Testing
+# Tests
 pytest>=8.0.0
 pytest-asyncio>=0.24.0
-
-# Utilities
-python-dotenv>=1.0.0
-httpx>=0.27.0

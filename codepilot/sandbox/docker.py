@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import shlex
 import tarfile
 import time
@@ -24,6 +25,8 @@ from pathlib import Path
 
 from codepilot.sandbox.base import CommandResult
 from codepilot.sandbox.pytest_parse import TestOutcome, parse
+
+log = logging.getLogger(__name__)
 
 WORKDIR = "/workspace"
 DEFAULT_IMAGE = "codepilot-sandbox:latest"
@@ -152,4 +155,7 @@ class DockerSandbox:
         try:
             await asyncio.to_thread(container.stop, timeout=5)
         except Exception:  # noqa: BLE001 - teardown must not mask the real error
-            pass
+            # A container that will not stop leaks resources across an eval
+            # sweep, which is worth knowing about even though it must not
+            # replace whatever error brought us here.
+            log.warning("could not stop container %s", self.id, exc_info=True)

@@ -290,6 +290,27 @@ async def cmd_sessions(args) -> int:
     return 0
 
 
+async def cmd_export(args) -> int:
+    """Turn a recorded session into a replay the static page can play."""
+    from codepilot.replay import export
+
+    root = Path(args.directory).resolve()
+    sessions = list_sessions(root)
+    if not sessions:
+        print("  no sessions in this repository")
+        return 1
+    session_id = args.session or sessions[0][0]
+    out = Path(args.out) if args.out else root / "web" / "replays"
+    try:
+        path = export(root, session_id, out, name=args.name, title=args.title)
+    except ValueError as exc:
+        print(f"  ! {exc}")
+        return 1
+    print(f"  wrote {path}")
+    print(f"  serve it with: python -m http.server -d {out.parent}")
+    return 0
+
+
 async def cmd_doctor(args) -> int:
     from codepilot.doctor import run
 
@@ -347,6 +368,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sessions_p = sub.add_parser("sessions", help="list sessions in this repository")
     sessions_p.set_defaults(fn=cmd_sessions)
+
+    export_p = sub.add_parser("export", help="export a session as a replay")
+    export_p.add_argument("session", nargs="?", help="session id (default: most recent)")
+    export_p.add_argument("--out", help="output directory (default: web/replays)")
+    export_p.add_argument("--name", default="", help="output filename stem")
+    export_p.add_argument("--title", default="", help="title shown in the picker")
+    export_p.set_defaults(fn=cmd_export)
 
     doctor_p = sub.add_parser("doctor", help="check the installation end to end")
     doctor_p.add_argument("--live", action="store_true", help="include billed API checks")

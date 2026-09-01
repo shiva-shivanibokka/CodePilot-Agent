@@ -94,13 +94,20 @@ def test_a_truncated_final_line_does_not_lose_the_session(tmp_path):
 
 
 def test_sessions_are_listed_newest_first(tmp_path):
+    import os
+
     first = SessionStore.create(tmp_path, "aaa")
     first.record_turn("t1", "s", "$0")
     second = SessionStore.create(tmp_path, "bbb")
     second.record_turn("t2", "s", "$0")
+    # Set the timestamps explicitly: both files are written inside the same
+    # filesystem timestamp, so "newest" would otherwise be a coin flip.
+    os.utime(first.path, (1_000_000, 1_000_000))
+    os.utime(second.path, (2_000_000, 2_000_000))
+
     rows = list_sessions(tmp_path)
-    assert [r[0] for r in rows][0] == "bbb"
-    assert dict((r[0], r[2]) for r in rows) == {"aaa": 1, "bbb": 1}
+    assert [r[0] for r in rows] == ["bbb", "aaa"]
+    assert {r[0]: r[2] for r in rows} == {"aaa": 1, "bbb": 1}
 
 
 @pytest.mark.asyncio

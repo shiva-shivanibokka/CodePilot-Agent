@@ -16,7 +16,7 @@ from codepilot.agent.pipeline import (
 )
 from codepilot.context import Conversation
 from codepilot.events import EventStream, EventType
-from codepilot.llm import Reply, ToolCall, Usage
+from codepilot.llm import Reply, Usage
 from codepilot.permissions import Budget, PermissionGate
 from codepilot.tools import ToolContext
 from codepilot.workspace import Workspace
@@ -229,3 +229,21 @@ async def test_an_unparseable_plan_falls_back_to_one_step(tmp_path):
     assert state.steps == ["the original task"]
     assert state.approved
     assert any(e.type is EventType.ERROR for e in stream.events)
+
+
+@pytest.mark.asyncio
+async def test_cost_events_carry_token_counts(tmp_path):
+    """Omitting these made the eval sum zero input tokens, so its cache
+    percentage read as a confident 100% that had never been measured."""
+    client = ScriptedClient(steps=["one"])
+    rt, stream = runtime(tmp_path, client, FakeSandbox([FakeOutcome()]))
+    await run_pipeline(rt, "a task")
+
+    costs = [e for e in stream.events if e.type is EventType.COST]
+    assert costs, "no cost events were emitted"
+    for event in costs:
+        assert "input_tokens" in event.data, event.data
+        assert "output_tokens" in event.data, event.data
+    assert rt.convo.usage.input_tokens > 0, (
+        "shared usage was never updated, so cache_report() would read zero"
+    )

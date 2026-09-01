@@ -158,12 +158,21 @@ async def _converse(
         rt.budget.record(
             reply.cost_usd, reply.usage.input_tokens + reply.usage.output_tokens
         )
+        # Accumulate onto the shared Conversation even though each phase talks
+        # through its own: cache_report() reads convo.usage, and without this
+        # the pipeline reports a cache hit rate of zero it never measured.
+        rt.convo.usage = rt.convo.usage + reply.usage
         cost = f"${reply.cost_usd:.5f}" if reply.cost_usd is not None else "unpriced"
         rt.ctx.events.emit(
             EventType.COST,
             f"{cost} · {reply.usage.input_tokens:,} in / {reply.usage.output_tokens:,} out",
             cost_usd=reply.cost_usd,
+            # The eval sums these per run. Omitting them made input_tokens zero,
+            # which turned the cache percentage into a confident 100%.
+            input_tokens=reply.usage.input_tokens,
+            output_tokens=reply.usage.output_tokens,
             cache_read=reply.usage.cache_read_tokens,
+            model=reply.model,
         )
         if reply.text.strip():
             text = reply.text.strip()

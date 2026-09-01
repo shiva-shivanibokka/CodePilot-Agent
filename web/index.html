@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodePilot — recorded sessions</title>
+<style>
+  :root {
+    --bg: #0d1017; --panel: #141922; --line: #232a36;
+    --text: #d7dde8; --dim: #7d8798; --accent: #7fd1c1;
+    --add: #7fd18a; --del: #e07b7b; --warn: #e0c07b;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 var(--mono);
+  }
+  header {
+    padding: 28px 24px 20px; border-bottom: 1px solid var(--line);
+    max-width: 1000px; margin: 0 auto;
+  }
+  h1 { margin: 0 0 6px; font-size: 20px; letter-spacing: -0.01em; }
+  .sub { color: var(--dim); font-size: 13px; max-width: 68ch; }
+  .sub strong { color: var(--text); font-weight: 600; }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px 24px 60px; }
+
+  .picker { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  button {
+    font: inherit; font-size: 12px; color: var(--text); cursor: pointer;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 12px;
+  }
+  button:hover { border-color: var(--accent); }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+  .controls {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 0 14px; border-bottom: 1px solid var(--line); margin-bottom: 14px;
+  }
+  .meta { color: var(--dim); font-size: 12px; margin-left: auto; }
+
+  #stream {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 16px; min-height: 320px; max-height: 70vh; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .ev { display: flex; gap: 10px; padding: 2px 0; animation: in .18s ease-out; }
+  @keyframes in { from { opacity: 0; transform: translateY(2px); } }
+  .icon { flex: 0 0 1.4em; }
+  .body { flex: 1 1 auto; }
+  .t-user_message .body { color: #fff; font-weight: 600; }
+  .t-assistant_text .body { color: var(--text); padding: 6px 0; }
+  .t-tool_call .body { color: var(--accent); }
+  .t-tool_result .body, .t-cost .body, .t-checkpoint .body { color: var(--dim); }
+  .t-error .body, .t-budget .body { color: var(--warn); }
+  .t-done .body { color: var(--add); }
+  .diff { margin: 4px 0 8px; border-left: 2px solid var(--line); padding-left: 10px; font-size: 12.5px; }
+  .diff .a { color: var(--add); }
+  .diff .d { color: var(--del); }
+  .diff .h { color: var(--dim); }
+  footer { color: var(--dim); font-size: 12px; margin-top: 22px; max-width: 68ch; }
+  a { color: var(--accent); }
+  .empty { color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CodePilot — recorded sessions</h1>
+  <p class="sub">
+    A small coding agent that edits a real git repository: it reads the code,
+    changes it by exact-string replacement, runs the tests, and checkpoints
+    every turn so <code>codepilot undo</code> puts things back.
+    <strong>These are recordings of real local runs</strong> — the same event
+    stream the terminal prints, replayed at its original pacing. Nothing is
+    simulated, and nothing is re-enacted.
+  </p>
+  <p class="sub" style="margin-top:10px">
+    There is no live demo on purpose. The agent runs shell commands and edits
+    files, so it belongs on your machine, not on a public server. Clone it,
+    add your own key, and it does this in your repository.
+  </p>
+</header>
+
+<main>
+  <div class="picker" id="picker"></div>
+  <div class="controls">
+    <button id="play">▶ play</button>
+    <button id="reset">↺ restart</button>
+    <button class="speed" data-x="1" aria-pressed="true">1×</button>
+    <button class="speed" data-x="4">4×</button>
+    <button class="speed" data-x="0">skip to end</button>
+    <span class="meta" id="meta"></span>
+  </div>
+  <div id="stream"><span class="empty">Loading recordings…</span></div>
+  <footer id="foot"></footer>
+</main>
+
+<script>
+const ICONS = {
+  user_message: "❯", assistant_text: "·", plan: "📝", tool_call: "🔧",
+  tool_result: "📋", diff: "±", test_result: "🧪", checkpoint: "⎘",
+  permission_decision: "🔓", interrupt: "✋", cost: "💰", budget: "⛔",
+  error: "❌", done: "✅",
+};
+
+const stream = document.getElementById("stream");
+const picker = document.getElementById("picker");
+const meta   = document.getElementById("meta");
+const foot   = document.getElementById("foot");
+const playBtn = document.getElementById("play");
+
+let current = null, timer = null, index = 0, speed = 1;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+function renderDiff(text) {
+  return text.split("\n").map(line => {
+    const cls = line.startsWith("+") && !line.startsWith("+++") ? "a"
+              : line.startsWith("-") && !line.startsWith("---") ? "d" : "h";
+    return `<span class="${cls}">${escapeHtml(line)}</span>`;
+  }).join("\n");
+}
+
+function append(ev) {
+  const el = document.createElement("div");
+  el.className = `ev t-${ev.type}`;
+  let body = escapeHtml(ev.message);
+  if (ev.type === "diff" && ev.data && ev.data.diff) {
+    body += `\n<div class="diff">${renderDiff(ev.data.diff)}</div>`;
+  }
+  el.innerHTML = `<span class="icon">${ICONS[ev.type] || "•"}</span><span class="body">${body}</span>`;
+  stream.appendChild(el);
+  stream.scrollTop = stream.scrollHeight;
+}
+
+function stop() {
+  clearTimeout(timer); timer = null;
+  playBtn.textContent = "▶ play";
+}
+
+function step() {
+  if (!current || index >= current.events.length) { stop(); return; }
+  const ev = current.events[index];
+  append(ev);
+  index++;
+  if (index >= current.events.length) { stop(); return; }
+  if (speed === 0) { step(); return; }
+  // Replay the real gaps, capped so a long model call is not a long stare.
+  const gap = Math.min(current.events[index].at_ms - ev.at_ms, 2500) / speed;
+  timer = setTimeout(step, Math.max(gap, 40));
+}
+
+function play() {
+  if (timer) { stop(); return; }
+  if (index >= (current?.events.length || 0)) restart();
+  playBtn.textContent = "❚❚ pause";
+  step();
+}
+
+function restart() {
+  stop(); stream.innerHTML = ""; index = 0;
+}
+
+async function load(entry) {
+  restart();
+  stream.innerHTML = '<span class="empty">Loading…</span>';
+  const res = await fetch(`replays/${entry.file}`);
+  current = await res.json();
+  stream.innerHTML = "";
+  meta.textContent =
+    `${current.model_calls} model calls · $${current.total_cost_usd.toFixed(4)} · ${current.duration_seconds.toFixed(0)}s`;
+  foot.textContent = current.note || "";
+  [...picker.children].forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.file === entry.file)));
+  play();
+}
+
+document.getElementById("play").onclick = play;
+document.getElementById("reset").onclick = () => { restart(); play(); };
+document.querySelectorAll(".speed").forEach(b => {
+  b.onclick = () => {
+    speed = Number(b.dataset.x);
+    document.querySelectorAll(".speed").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    if (speed === 0 && !timer) play();
+  };
+});
+
+(async () => {
+  try {
+    const index_ = await (await fetch("replays/index.json")).json();
+    if (!index_.replays.length) throw new Error("no recordings yet");
+    for (const entry of index_.replays) {
+      const b = document.createElement("button");
+      b.textContent = entry.title;
+      b.dataset.file = entry.file;
+      b.onclick = () => load(entry);
+      picker.appendChild(b);
+    }
+    load(index_.replays[0]);
+  } catch (err) {
+    stream.innerHTML =
+      `<span class="empty">No recordings found (${escapeHtml(err.message)}).<br><br>` +
+      `Record one with:<br>&nbsp;&nbsp;codepilot run "…"<br>` +
+      `&nbsp;&nbsp;codepilot export &lt;session-id&gt;</span>`;
+  }
+})();
+</script>
+</body>
+</html>

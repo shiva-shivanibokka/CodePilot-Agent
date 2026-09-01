@@ -422,3 +422,52 @@ def _brief(args: dict[str, Any], limit: int = 90) -> str:
 def _first_line(text: str, limit: int = 120) -> str:
     line = text.strip().splitlines()[0] if text.strip() else "(empty)"
     return line[:limit] + ("…" if len(line) > limit else "")
+
+
+@tool(
+    "find_symbol",
+    "Look up a function, method or class by name and get its definition along "
+    "with what it calls and what calls it. One call instead of several "
+    "searches when you need to know what a change will affect.",
+    {
+        "name": {"type": "string", "description": "Function, method or class name"},
+        "include_source": {"type": "boolean", "description": "Include the body (default true)"},
+    },
+    ["name"],
+    read_only=True,
+)
+async def find_symbol(ctx: ToolContext, name: str, include_source: bool = True) -> str:
+    from codepilot.indexer import build_index
+
+    index = build_index(ctx.workspace.root, ctx.workspace.list_files())
+    matches = index.lookup(name)
+    if not matches:
+        known = sorted(index.by_name)[:30]
+        raise ValueError(
+            f"No symbol named {name!r}. Defined in this repository: "
+            f"{', '.join(known) or '(nothing indexable)'}"
+        )
+
+    out: list[str] = []
+    for symbol in matches[:5]:
+        out.append(f"=== {symbol.file}:{symbol.line} — {symbol.signature}")
+        if symbol.docstring:
+            out.append(f'    """{symbol.docstring.strip().splitlines()[0]}"""')
+        callers = [c for c in index.callers_of(symbol.qualname.split(".")[-1])
+                   if c.key != symbol.key]
+        if callers:
+            out.append(
+                "    called by: "
+                + ", ".join(f"{c.file}:{c.qualname}" for c in callers[:8])
+            )
+        internal = sorted(c for c in symbol.calls if c in index.by_name)
+        if internal:
+            out.append("    calls: " + ", ".join(internal[:8]))
+        if include_source:
+            lines = ctx.workspace.read(symbol.file).splitlines()
+            body = lines[symbol.line - 1 : symbol.end_line]
+            out.append("\n".join(f"{symbol.line + i:5d} | {ln}" for i, ln in enumerate(body)))
+        out.append("")
+    if index.unparseable:
+        out.append(f"(could not parse: {', '.join(index.unparseable)})")
+    return _truncate("\n".join(out))

@@ -120,4 +120,6 @@ def list_sessions(root: Path) -> list[tuple[str, datetime, int]]:
                 len(store.turns()),
             )
         )
-    return sorted(out, key=lambda row: row[1], reverse=True)
+    # Tie-break on id: two sessions created inside one filesystem timestamp
+    # would otherwise order arbitrarily, which is a flaky 'most recent'.
+    return sorted(out, key=lambda row: (row[1], row[0]), reverse=True)

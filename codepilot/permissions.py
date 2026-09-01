@@ -21,10 +21,10 @@ import re
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     ALLOW = "allow"
     ASK = "ask"
     DENY = "deny"

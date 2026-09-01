@@ -11,7 +11,6 @@ from codepilot.permissions import (
     PermissionGate,
 )
 
-
 # ------------------------------------------------------------------ classify
 
 

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main, rebuild]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is not optional here: the sandbox spawns processes and the
+        # renderer prints non-ASCII, and both have failed on Windows alone.
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff==0.16.3
+
+      - name: Configure git
+        # The workspace tests create real repositories and commit to them.
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "ci"
+          git config --global init.defaultBranch main
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Doctor
+        # The wiring check, without the billed API calls. It has caught things
+        # the unit tests did not: a pytest parser that read every -q run as
+        # zero passed, and an undo that staged what it restored.
+        run: python -m codepilot.doctor
+
+  eval-fixtures:
+    # The eval's fixtures must actually measure something: if a task's held-out
+    # tests already pass on the untouched fixture, every arm scores a free pass.
+    # No API key and no model calls.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - run: python -m evals.runner --dry-run
