@@ -140,18 +140,29 @@ async def cmd_run(args) -> int:
         print(f"\n  ! {exc}\n")
         return 2
 
-    loop = AgentLoop(client, ctx, convo, budget, effort=args.effort, model=args.model)
-    result = await loop.run(args.task)
-    session.record_messages(convo.messages)
-    session.record_turn(args.task, result.summary, budget.summary())
+    if args.arm == "pipeline":
+        from codepilot.agent.pipeline import Runtime, run_pipeline
 
-    print(f"\n  session {session.session_id} · {budget.summary()}")
+        rt = Runtime(
+            client=client, ctx=ctx, convo=convo, budget=budget,
+            effort=args.effort, model=args.model,
+        )
+        state = await run_pipeline(rt, args.task)
+        finished, summary, edited = state.approved, state.summary, state.edited
+    else:
+        loop = AgentLoop(client, ctx, convo, budget, effort=args.effort, model=args.model)
+        result = await loop.run(args.task)
+        finished, summary, edited = result.finished, result.summary, result.edited
+        session.record_messages(convo.messages)
+    session.record_turn(args.task, summary, budget.summary())
+
+    print(f"\n  session {session.session_id} · arm={args.arm} · {budget.summary()}")
     print(f"  {convo.cache_report()}")
-    if result.edited:
-        print(f"  edited: {', '.join(result.edited)}")
+    if edited:
+        print(f"  edited: {', '.join(edited)}")
     if args.checkpoint:
         print("  `codepilot undo` reverts this turn")
-    return 0 if result.finished else 1
+    return 0 if finished else 1
 
 
 async def cmd_chat(args) -> int:
@@ -307,6 +318,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--max-calls", type=int, default=40, dest="max_calls")
         p.add_argument("--resume", metavar="SESSION_ID")
         p.add_argument("--yes", action="store_true", help="approve every command")
+        p.add_argument(
+            "--arm",
+            default="loop",
+            choices=["loop", "pipeline"],
+            help="loop: the model chooses each step. pipeline: a fixed plan/code/test/debug/review graph.",
+        )
         p.add_argument(
             "--no-checkpoint",
             dest="checkpoint",
