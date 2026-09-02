@@ -403,6 +403,15 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not os.getenv("ANTHROPIC_API_KEY"):
         load_env(Path(args.directory).resolve())
+    if not os.getenv("ANTHROPIC_API_KEY") and args.fn not in (cmd_doctor, cmd_serve):
+        # Without this the SDK raises a TypeError about request headers, eight
+        # frames deep, for what is one missing line in one file.
+        print(
+            "  ! ANTHROPIC_API_KEY is not set.\n"
+            "    Put it in .env here, in the repository you are working on, or in\n"
+            f"    {Path.home() / '.codepilot.env'} to use it from anywhere."
+        )
+        return 2
     try:
         return asyncio.run(args.fn(args))
     except KeyboardInterrupt:

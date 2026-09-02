@@ -7,6 +7,22 @@
       "model_calls": 8,
       "duration_seconds": 36.9,
       "events": 35
+    },
+    {
+      "file": "one-cause-three-failures.json",
+      "title": "Three failing tests, one root cause",
+      "cost_usd": 0.0705,
+      "model_calls": 5,
+      "duration_seconds": 27.3,
+      "events": 28
+    },
+    {
+      "file": "two-shipping-rules.json",
+      "title": "Add two shipping rules across three files",
+      "cost_usd": 0.2083,
+      "model_calls": 7,
+      "duration_seconds": 67.5,
+      "events": 37
     }
   ]
 }

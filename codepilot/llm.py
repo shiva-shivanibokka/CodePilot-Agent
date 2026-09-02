@@ -26,7 +26,8 @@ from anthropic import AsyncAnthropic
 
 
 def load_env(root: Path | str | None = None) -> None:
-    """Read `.env` from a repository, then `~/.codepilot.env`.
+    """Read `.env` from the repository being worked on, then where you ran the
+    command, then `~/.codepilot.env`.
 
     Explicit paths, because `find_dotenv()` searches upward from the *caller*,
     which for an installed tool is site-packages. This lives beside the client
@@ -34,13 +35,17 @@ def load_env(root: Path | str | None = None) -> None:
     key: the eval harness ran a whole sweep without one and scored every task
     a failure, which is the same mistake as counting an unreachable judge's
     zero as a verdict.
+
+    The working directory is in the list because of the ordinary case that
+    used to fail: the key sits in CodePilot's own `.env`, and the repository
+    being edited is somewhere else entirely.
     """
     try:
         from dotenv import load_dotenv
     except ImportError:
         return
     base = Path(root) if root is not None else Path.cwd()
-    for candidate in (base / ".env", Path.home() / ".codepilot.env"):
+    for candidate in (base / ".env", Path.cwd() / ".env", Path.home() / ".codepilot.env"):
         if candidate.is_file():
             load_dotenv(candidate, override=False)
 

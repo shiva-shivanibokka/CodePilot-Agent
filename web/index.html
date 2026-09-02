@@ -60,6 +60,8 @@
   .diff .d { color: var(--del); }
   .diff .h { color: var(--dim); }
   footer { color: var(--dim); font-size: 12px; margin-top: 22px; max-width: 68ch; }
+  a { color: var(--accent, #7fd1ae); }
+  a:hover { text-decoration: none; }
   a { color: var(--accent); }
   .empty { color: var(--dim); }
 </style>
@@ -69,16 +71,29 @@
   <h1>CodePilot — recorded sessions</h1>
   <p class="sub">
     A small coding agent that edits a real git repository: it reads the code,
-    changes it by exact-string replacement, runs the tests, and checkpoints
-    every turn so <code>codepilot undo</code> puts things back.
-    <strong>These are recordings of real local runs</strong> — the same event
-    stream the terminal prints, replayed at its original pacing. Nothing is
-    simulated, and nothing is re-enacted.
+    changes it, runs the tests, and checkpoints every turn so
+    <code>codepilot undo</code> puts things back.
+    <strong>These are recordings of real runs</strong> — the same event stream
+    the terminal prints, replayed at its original pacing. Nothing is simulated,
+    and nothing is re-enacted. The cost on each one is what it actually cost.
   </p>
   <p class="sub" style="margin-top:10px">
-    There is no live demo on purpose. The agent runs shell commands and edits
-    files, so it belongs on your machine, not on a public server. Clone it,
-    add your own key, and it does this in your repository.
+    There is no live demo here, because a live demo would mean running shell
+    commands for strangers on hardware I pay for. It <em>can</em> be hosted —
+    there is a server mode that runs every command in a locked-down container,
+    requires callers to bring their own key, and hands back a patch instead of
+    writing to your branch — but the thing to do with it is clone it, add your
+    own key, and point it at your own repository.
+  </p>
+  <p class="sub" style="margin-top:10px">
+    It was also built to measure its own design rather than assert it. Four
+    experiments, twenty tasks, each scored by held-out tests the agent never
+    sees. Two of them contradicted the design and the design changed: whether
+    to rewrite a file or edit it in place <strong>reverses with file size</strong>,
+    and the symbol index this project is named after
+    <strong>never beat plain grep</strong>. The numbers, and the raw results
+    files behind them, are in the
+    <a href="https://github.com/shiva-shivanibokka/CodePilot-Agent">repository</a>.
   </p>
 </header>
 
@@ -94,6 +109,10 @@
   </div>
   <div id="stream"><span class="empty">Loading recordings…</span></div>
   <footer id="foot"></footer>
+  <footer>
+    Built by Shivani Bokka ·
+    <a href="https://github.com/shiva-shivanibokka/CodePilot-Agent">source and measurements on GitHub</a>
+  </footer>
 </main>
 
 <script>
