@@ -330,6 +330,48 @@ async def _session_round_trip() -> str:
     return "messages and content blocks survive save -> load"
 
 
+async def _eval_fixtures() -> str:
+    """The eval's fixtures are wiring too, and they rot the same way.
+
+    A task whose fixture no longer contains the text its mutation patches goes
+    on running and quietly measures nothing — the bug it was built to hunt is
+    not there any more. This turns that into a failed check instead of a
+    number nobody questions.
+    """
+    from evals.tasks import TASKS
+
+    checked = 0
+    for task in TASKS:
+        repo = task.repo()  # raises if a fixture or a mutation has drifted
+        if not task.fixture:
+            continue
+        checked += 1
+        for path in task.held_out:
+            if path in repo:
+                return f"{task.id} ships its own held-out tests at {path}"
+        if task.tier.endswith("debug") and not any(
+            rel.startswith("tests/") for rel in repo
+        ):
+            return f"{task.id} is a debug task with no visible suite"
+    return f"{len(TASKS)} tasks assemble; {checked} built on a checked-in fixture"
+
+
+async def _eval_fixture_is_large() -> str:
+    """Experiments 2 and 3 need a repository big enough to separate the arms."""
+    from evals.tasks import load_fixture
+
+    repo = load_fixture("shop")
+    lines = sum(len(text.splitlines()) for text in repo.values())
+    biggest = max(len(text.splitlines()) for text in repo.values())
+    source = "\n".join(t for r, t in repo.items() if r.endswith(".py"))
+    applies = source.count("def apply")
+    if lines < 1500 or biggest < 400:
+        return f"too small: {lines} lines, biggest file {biggest}"
+    if applies < 10:
+        return f"only {applies} `apply` definitions — grep is not ambiguous enough"
+    return f"{lines} lines, biggest file {biggest}, {applies} `apply` definitions"
+
+
 async def _api_key() -> str:
     key = os.getenv("ANTHROPIC_API_KEY", "")
     if not key:
@@ -392,6 +434,10 @@ async def run(live: bool = False) -> int:
     print("\nAgent")
     await doctor.check("loop stops at the budget", _loop_terminates)
     await doctor.check("session save and resume", _session_round_trip)
+
+    print("\nEvals")
+    await doctor.check("task fixtures assemble", _eval_fixtures)
+    await doctor.check("large fixture is large", _eval_fixture_is_large)
 
     print("\nAPI" + ("" if live else "  (--live to include billed checks)"))
     await doctor.check("api key", _api_key)

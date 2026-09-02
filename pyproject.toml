@@ -13,3 +13,6 @@ ignore = ["E501"]
 
 [tool.ruff]
 line-length = 100
+# Fixture repositories are input data for the eval harness, not this
+# project's source. One of them ships a deliberate bug.
+exclude = ["evals/fixtures"]

@@ -12,14 +12,16 @@ from __future__ import annotations
 import pytest
 
 from evals.runner import RunResult, _check_survivors, summarise
-from evals.tasks import HELD_OUT, TASKS, Task, by_ids, by_tier
+from evals.tasks import HELD_OUT, TASKS, Task, by_ids, by_tier, load_fixture
+
+TIERS = ("single", "multi", "debug", "large", "large-debug")
 
 
 def test_every_task_has_held_out_tests_and_a_prompt():
     for task in TASKS:
         assert task.prompt.strip(), task.id
         assert HELD_OUT in task.held_out, f"{task.id} has no held-out tests"
-        assert task.tier in ("single", "multi", "debug"), task.id
+        assert task.tier in TIERS, task.id
 
 
 def test_task_ids_are_unique():
@@ -28,18 +30,100 @@ def test_task_ids_are_unique():
 
 
 def test_held_out_tests_are_never_part_of_the_starting_repository():
-    """If the agent can read them, the eval measures nothing."""
+    """If the agent can read them, the eval measures nothing.
+
+    Checked against the assembled repository rather than the inline `files`,
+    because a fixture directory can ship a `tests/` tree of its own and one of
+    those files landing on the held-out path would hand the agent the answer.
+    """
     for task in TASKS:
+        repo = task.repo()
         for path in task.held_out:
-            assert path not in task.files, f"{task.id} ships its own held-out tests"
+            assert path not in repo, f"{task.id} ships its own held-out tests"
 
 
 def test_every_debug_task_ships_a_visible_failing_suite():
     """A debug task with no visible tests has nothing to debug."""
-    for task in by_tier("debug"):
-        assert any(rel.startswith("tests/") for rel in task.files), (
-            f"{task.id} is tier=debug but has no visible test file"
+    for task in by_tier("debug") + by_tier("large-debug"):
+        repo = task.repo()
+        assert any(rel.startswith("tests/") for rel in repo), (
+            f"{task.id} is a debug task but has no visible test file"
         )
+
+
+# ---------------------------------------------------------------------------
+# The large fixture
+# ---------------------------------------------------------------------------
+
+
+def test_the_large_fixture_is_actually_large():
+    """The point of it is the regime the small tasks cannot reach.
+
+    Experiments 2 and 3 both ended in "no difference worth claiming" because
+    every fixture was under fifteen lines — too small for rewriting a file to
+    cost anything, and too small for a regex to return the wrong definition.
+    """
+    repo = load_fixture("shop")
+    lines = sum(len(text.splitlines()) for text in repo.values())
+    assert lines > 1500, f"only {lines} lines"
+    biggest = max(len(text.splitlines()) for text in repo.values())
+    assert biggest > 400, f"biggest file is only {biggest} lines"
+
+
+def test_the_large_fixture_is_ambiguous_to_grep():
+    """A symbol index can only beat search where the name is not unique."""
+    source = "\n".join(
+        text for rel, text in load_fixture("shop").items() if rel.endswith(".py")
+    )
+    assert source.count("def apply") >= 10
+    assert source.count("def validate") >= 10
+
+
+def test_loading_a_fixture_skips_build_artefacts():
+    assert not any("__pycache__" in rel for rel in load_fixture("shop"))
+    assert not any(rel.endswith(".pyc") for rel in load_fixture("shop"))
+
+
+def test_loading_an_unknown_fixture_says_so():
+    with pytest.raises(FileNotFoundError, match="no fixture"):
+        load_fixture("not-a-fixture")
+
+
+def test_inline_files_are_laid_over_the_fixture():
+    task = Task(
+        id="t", tier="large", prompt="p", fixture="shop",
+        files={"shop/errors.py": "replaced\n"},
+    )
+    repo = task.repo()
+    assert repo["shop/errors.py"] == "replaced\n"
+    assert "def rate_bps" in repo["shop/pricing.py"]
+
+
+def test_a_mutation_changes_exactly_what_it_names():
+    task = Task(
+        id="t", tier="large-debug", prompt="p", fixture="shop",
+        mutate=(("shop/errors.py", "class ShopError", "class Broken"),),
+    )
+    repo = task.repo()
+    assert "class Broken" in repo["shop/errors.py"]
+    assert "class ShopError" not in repo["shop/errors.py"]
+
+
+def test_a_mutation_that_no_longer_matches_is_an_error():
+    """Otherwise editing the fixture silently disarms the bug a task hunts."""
+    task = Task(
+        id="t", tier="large-debug", prompt="p", fixture="shop",
+        mutate=(("shop/errors.py", "text that is not there", "x"),),
+    )
+    with pytest.raises(ValueError, match="mutation text not found"):
+        task.repo()
+
+    missing = Task(
+        id="t", tier="large-debug", prompt="p", fixture="shop",
+        mutate=(("shop/nope.py", "a", "b"),),
+    )
+    with pytest.raises(KeyError, match="missing file"):
+        missing.repo()
 
 
 def test_selecting_tasks_by_id():

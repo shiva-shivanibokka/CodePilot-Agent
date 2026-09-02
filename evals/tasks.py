@@ -20,6 +20,31 @@ language-specific.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+#: Never copied into a task repository.
+_SKIP = {"__pycache__", ".pytest_cache", ".ruff_cache", ".git"}
+
+
+def load_fixture(name: str) -> dict[str, str]:
+    """Read a checked-in fixture repository off disk.
+
+    The small tasks carry their two files inline, which is readable at that
+    size and unreadable at two thousand lines. A fixture large enough to test
+    the regime `edit_file` and the symbol index were built for has to be real
+    files someone can open, run and read.
+    """
+    root = FIXTURES / name
+    if not root.is_dir():
+        raise FileNotFoundError(f"no fixture {name!r} under {FIXTURES}")
+    out: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or any(part in _SKIP for part in path.parts):
+            continue
+        out[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+    return out
 
 
 @dataclass(frozen=True)
@@ -34,6 +59,25 @@ class Task:
     #: Files the agent must not have deleted. Checked after the run — this is
     #: how experiment 2 detects whole-file rewrites dropping unrelated code.
     must_survive: dict[str, list[str]] = field(default_factory=dict)
+    #: A checked-in fixture repository to start from, before `files` is laid
+    #: over the top.
+    fixture: str = ""
+    #: `(path, old, new)` edits applied to the fixture, used to plant the bug a
+    #: debug task exists to find. A three-line patch beats a duplicated copy of
+    #: a four-hundred-line file, and shows the reader exactly what is wrong.
+    mutate: tuple[tuple[str, str, str], ...] = ()
+
+    def repo(self) -> dict[str, str]:
+        """The starting tree: fixture, then mutations, then inline files."""
+        files = load_fixture(self.fixture) if self.fixture else {}
+        for rel, old, new in self.mutate:
+            if rel not in files:
+                raise KeyError(f"{self.id}: mutation targets missing file {rel}")
+            if old not in files[rel]:
+                raise ValueError(f"{self.id}: mutation text not found in {rel}: {old!r}")
+            files[rel] = files[rel].replace(old, new, 1)
+        files.update(self.files)
+        return files
 
 
 HELD_OUT = "tests/test_held_out.py"
@@ -462,6 +506,255 @@ TASKS: list[Task] = [
                 "    assert register('z', target) is target\n"
                 "    assert target == {'seed': True, 'z': True}\n"
             )
+        },
+    ),
+    # ----------------------------------------------------------------- large
+    # Everything above is a handful of lines. These five run against a real
+    # 1,600-line package (`evals/fixtures/shop`) with a 437-line pricing
+    # module, thirteen different `apply` methods and thirteen `validate`
+    # methods — the regime where rewriting a file is expensive and where a
+    # regex on a method name returns the wrong definition.
+    Task(
+        id="large-volume-tier",
+        tier="large",
+        fixture="shop",
+        prompt=(
+            "Add a fourth volume tier: 500 units or more takes 20 percent off. "
+            "The three existing tiers must keep working, and a line must still "
+            "take only the single best tier it qualifies for rather than "
+            "stacking them."
+        ),
+        held_out={
+            HELD_OUT: (
+                "from shop.models import Customer, Order, Product\n"
+                "from shop.money import Money\n"
+                "from shop.pricing import VolumeDiscount, price\n\n"
+                "def order_of(quantity):\n"
+                "    customer = Customer(id='c1', email='a@b.com')\n"
+                "    order = Order(id='o1', customer=customer)\n"
+                "    order.add(Product(sku='WD-1001', name='W',"
+                " unit_price=Money.from_major(10)), quantity)\n"
+                "    return order\n\n"
+                "def test_new_tier():\n"
+                "    assert VolumeDiscount().tier_for(500) == (500, 2000)\n\n"
+                "def test_well_above_the_new_tier():\n"
+                "    assert VolumeDiscount().tier_for(5000) == (500, 2000)\n\n"
+                "def test_just_below_still_takes_fifteen():\n"
+                "    assert VolumeDiscount().tier_for(499) == (100, 1500)\n\n"
+                "def test_existing_tiers_survive():\n"
+                "    rule = VolumeDiscount()\n"
+                "    assert rule.tier_for(9) is None\n"
+                "    assert rule.tier_for(10) == (10, 500)\n"
+                "    assert rule.tier_for(50) == (50, 1000)\n"
+                "    assert rule.tier_for(100) == (100, 1500)\n\n"
+                "def test_end_to_end_takes_twenty_percent_once():\n"
+                "    assert price(order_of(500)).discount() == Money.from_major(1000)\n"
+            )
+        },
+        must_survive={
+            "shop/pricing.py": [
+                "rate_bps", "tier_for", "bps_for", "in_window", "complete", "net",
+                "gross", "reasons", "discounts_for", "_rescale", "_fixed_coupon",
+                "_spread_fixed", "tax_for", "quote", "default_rules", "price",
+            ]
+        },
+    ),
+    Task(
+        id="large-tax-category",
+        tier="large",
+        fixture="shop",
+        prompt=(
+            "Children's clothing is zero-rated for VAT in the UK. Products in "
+            "the 'childrenswear' category should be taxed at 0 percent in GB, "
+            "the same way books already are, and should be unchanged in every "
+            "other country."
+        ),
+        held_out={
+            HELD_OUT: (
+                "from shop.models import Address, Customer, Order, Product\n"
+                "from shop.money import Money\n"
+                "from shop.pricing import TaxTable, price\n\n"
+                "UK = Address(line1='1 High St', city='London',"
+                " postcode='SW1A1AA', country='GB')\n\n"
+                "def test_uk_childrenswear_is_zero_rated():\n"
+                "    assert TaxTable().rate_bps('GB', 'childrenswear') == 0\n\n"
+                "def test_germany_is_unchanged():\n"
+                "    assert TaxTable().rate_bps('DE', 'childrenswear') == 1900\n\n"
+                "def test_uk_general_goods_still_pay_twenty():\n"
+                "    assert TaxTable().rate_bps('GB', 'general') == 2000\n\n"
+                "def test_uk_books_still_zero_rated():\n"
+                "    assert TaxTable().rate_bps('GB', 'book') == 0\n\n"
+                "def test_end_to_end_charges_no_vat():\n"
+                "    customer = Customer(id='c1', email='a@b.com', address=UK)\n"
+                "    order = Order(id='o1', customer=customer)\n"
+                "    order.add(Product(sku='CW-1001', name='Coat',"
+                " unit_price=Money.from_major(40), category='childrenswear'), 1)\n"
+                "    assert price(order).tax() == Money.zero()\n"
+            )
+        },
+        must_survive={
+            "shop/pricing.py": [
+                "rate_bps", "tier_for", "bps_for", "discounts_for", "tax_for",
+                "quote", "default_rules", "price",
+            ]
+        },
+    ),
+    Task(
+        id="large-partner-cap",
+        tier="large",
+        fixture="shop",
+        prompt=(
+            "Partner customers are allowed to discount further than everyone "
+            "else. Raise the maximum total discount on a line to 75 percent "
+            "for partners, leaving it at 60 percent for every other customer "
+            "tier. The reasons on a capped line must still add up to the "
+            "capped amount."
+        ),
+        held_out={
+            HELD_OUT: (
+                "from shop.models import Customer, CustomerTier, Order, Product\n"
+                "from shop.money import Money\n"
+                "from shop.pricing import CategoryDiscount, PriceEngine\n\n"
+                "def order_of(tier):\n"
+                "    customer = Customer(id='c1', email='a@b.com', tier=tier)\n"
+                "    order = Order(id='o1', customer=customer)\n"
+                "    order.add(Product(sku='WD-1001', name='W',"
+                " unit_price=Money.from_major(100)), 1)\n"
+                "    return order\n\n"
+                "def engine():\n"
+                "    return PriceEngine(rules=[CategoryDiscount('general', 9000)])\n\n"
+                "def test_partner_reaches_seventy_five():\n"
+                "    quote = engine().quote(order_of(CustomerTier.PARTNER))\n"
+                "    assert quote.discount() == Money.from_major(75)\n\n"
+                "def test_gold_is_still_capped_at_sixty():\n"
+                "    quote = engine().quote(order_of(CustomerTier.GOLD))\n"
+                "    assert quote.discount() == Money.from_major(60)\n\n"
+                "def test_standard_is_still_capped_at_sixty():\n"
+                "    quote = engine().quote(order_of(CustomerTier.STANDARD))\n"
+                "    assert quote.discount() == Money.from_major(60)\n\n"
+                "def test_an_uncapped_discount_is_untouched():\n"
+                "    small = PriceEngine(rules=[CategoryDiscount('general', 1000)])\n"
+                "    quote = small.quote(order_of(CustomerTier.PARTNER))\n"
+                "    assert quote.discount() == Money.from_major(10)\n\n"
+                "def test_reasons_still_sum_to_the_cap():\n"
+                "    quote = engine().quote(order_of(CustomerTier.PARTNER))\n"
+                "    parts = sum(m.minor for m in quote.reasons().values())\n"
+                "    assert parts == quote.discount().minor\n"
+            )
+        },
+        must_survive={
+            "shop/pricing.py": [
+                "rate_bps", "tier_for", "bps_for", "in_window", "complete",
+                "discounts_for", "_rescale", "_fixed_coupon", "_spread_fixed",
+                "tax_for", "quote", "default_rules", "price",
+            ]
+        },
+    ),
+    Task(
+        id="large-shipping-light-far",
+        tier="large",
+        fixture="shop",
+        prompt=(
+            "Light parcels going a long way are being overcharged. Orders "
+            "shipping to a 'far' zone that weigh under 500 grams should cost a "
+            "flat 15.00 to deliver. It must beat the weight-banded rate, but "
+            "free-over-threshold and the partner rule must still win where "
+            "they apply."
+        ),
+        held_out={
+            HELD_OUT: (
+                "from shop.models import Address, Customer, CustomerTier, Order, Product\n"
+                "from shop.money import Money\n"
+                "from shop.shipping import ShippingQuoter\n\n"
+                "JP = Address(line1='1-1', city='Tokyo', postcode='1000001', country='JP')\n"
+                "US = Address(line1='1 Main St', city='Austin',"
+                " postcode='78701', country='US')\n\n"
+                "def order_of(address, grams, quantity=1, tier=CustomerTier.STANDARD,"
+                " major=10):\n"
+                "    customer = Customer(id='c1', email='a@b.com', tier=tier,"
+                " address=address)\n"
+                "    order = Order(id='o1', customer=customer)\n"
+                "    order.add(Product(sku='WD-1001', name='W',"
+                " unit_price=Money.from_major(major), weight_grams=grams), quantity)\n"
+                "    return order\n\n"
+                "def test_light_far_parcel_is_flat_fifteen():\n"
+                "    quoter = ShippingQuoter.standard()\n"
+                "    assert quoter.quote(order_of(JP, 400)) == Money.from_major(15)\n\n"
+                "def test_five_hundred_grams_is_not_light():\n"
+                "    quoter = ShippingQuoter.standard()\n"
+                "    assert quoter.quote(order_of(JP, 500)) == Money(2600 + 520)\n\n"
+                "def test_domestic_light_parcel_is_unaffected():\n"
+                "    quoter = ShippingQuoter.standard()\n"
+                "    assert quoter.quote(order_of(US, 400)) == Money(500 + 120)\n\n"
+                "def test_free_shipping_still_wins():\n"
+                "    quoter = ShippingQuoter.standard()\n"
+                "    assert quoter.quote(order_of(JP, 400, major=80)) == Money.zero()\n\n"
+                "def test_partner_still_ships_free():\n"
+                "    quoter = ShippingQuoter.standard()\n"
+                "    order = order_of(JP, 400, tier=CustomerTier.PARTNER)\n"
+                "    assert quoter.quote(order) == Money.zero()\n"
+            )
+        },
+        must_survive={
+            "shop/shipping.py": ["zone_for", "quote", "explain", "applies_to", "apply"],
+        },
+    ),
+    Task(
+        id="large-debug-tiers",
+        tier="large-debug",
+        fixture="shop",
+        # One word, in a four-hundred-line file, that four tests fail on.
+        mutate=(
+            (
+                "shop/pricing.py",
+                "self.tiers = sorted(tiers or VOLUME_TIERS, reverse=True)",
+                "self.tiers = sorted(tiers or VOLUME_TIERS)",
+            ),
+        ),
+        prompt=(
+            "Four tests in the pricing suite are failing. They have a single "
+            "cause. Find it and fix the code."
+        ),
+        held_out={
+            HELD_OUT: (
+                "from shop.models import Customer, CustomerTier, Order, Product\n"
+                "from shop.money import Money\n"
+                "from shop.pricing import (\n"
+                "    CategoryDiscount, PriceEngine, TierDiscount, VolumeDiscount, price,\n"
+                ")\n\n"
+                "def order_of(quantity, tier=CustomerTier.STANDARD):\n"
+                "    customer = Customer(id='c1', email='a@b.com', tier=tier)\n"
+                "    order = Order(id='o1', customer=customer)\n"
+                "    order.add(Product(sku='WD-1001', name='W',"
+                " unit_price=Money.from_major(10)), quantity)\n"
+                "    return order\n\n"
+                "def test_each_tier_returns_its_own_rate():\n"
+                "    rule = VolumeDiscount()\n"
+                "    assert rule.tier_for(9) is None\n"
+                "    assert rule.tier_for(10) == (10, 500)\n"
+                "    assert rule.tier_for(50) == (50, 1000)\n"
+                "    assert rule.tier_for(100) == (100, 1500)\n"
+                "    assert rule.tier_for(1000) == (100, 1500)\n\n"
+                "def test_best_tier_wins():\n"
+                "    assert price(order_of(100)).discount() == Money.from_major(150)\n\n"
+                "def test_custom_tiers_are_honoured_in_any_order():\n"
+                "    rule = VolumeDiscount(tiers=[(10, 500), (100, 1500), (50, 1000)])\n"
+                "    assert rule.tier_for(100) == (100, 1500)\n\n"
+                "def test_cap_still_binds():\n"
+                "    engine = PriceEngine(\n"
+                "        rules=[VolumeDiscount(), TierDiscount(),"
+                " CategoryDiscount('general', 5000)],\n"
+                "        max_discount_bps=6000,\n"
+                "    )\n"
+                "    quote = engine.quote(order_of(100, CustomerTier.PARTNER))\n"
+                "    assert quote.discount() == Money.from_major(600)\n"
+            )
+        },
+        must_survive={
+            "shop/pricing.py": [
+                "rate_bps", "tier_for", "bps_for", "discounts_for", "tax_for",
+                "quote", "default_rules", "price",
+            ]
         },
     ),
 ]

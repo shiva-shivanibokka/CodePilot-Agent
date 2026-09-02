@@ -123,7 +123,7 @@ async def run_one(
     started = time.monotonic()
     tmp = Path(tempfile.mkdtemp(prefix=f"eval_{task.id}_"))
     try:
-        _init_repo(tmp, task.files)
+        _init_repo(tmp, task.repo())
         stream = EventStream(session_id=f"{task.id}:{arm}")
         ctx = ToolContext(
             workspace=Workspace(root=tmp, session_id="eval"),
@@ -303,7 +303,9 @@ def render(results: list[RunResult], summary: dict) -> str:
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arms", nargs="+", default=["loop"], choices=["loop", "pipeline"])
-    parser.add_argument("--tier", choices=["single", "multi", "debug"])
+    parser.add_argument(
+        "--tier", choices=["single", "multi", "debug", "large", "large-debug"]
+    )
     parser.add_argument("--tasks", nargs="+", help="specific task ids")
     parser.add_argument("--model", default=STRONG_MODEL)
     parser.add_argument("--effort", default="low")
@@ -396,7 +398,8 @@ async def _dry_run(tasks: list[Task]) -> int:
     for task in tasks:
         tmp = Path(tempfile.mkdtemp(prefix=f"dry_{task.id}_"))
         try:
-            _init_repo(tmp, task.files)
+            repo = task.repo()
+            _init_repo(tmp, repo)
             for rel, content in task.held_out.items():
                 path = tmp / rel
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -411,10 +414,12 @@ async def _dry_run(tasks: list[Task]) -> int:
             # agent something untrue. One such task cost a run: the agent read
             # the code, found nothing failing, said so, and was scored a
             # failure for being right.
-            if task.tier == "debug" and any(
-                rel.startswith("tests/") for rel in task.files
+            if task.tier in ("debug", "large-debug") and any(
+                rel.startswith("tests/") and rel != HELD_OUT for rel in repo
             ):
-                visible = [rel for rel in task.files if rel.startswith("tests/")]
+                visible = [
+                    rel for rel in repo if rel.startswith("tests/") and rel != HELD_OUT
+                ]
                 own = await sandbox.run_tests(f"pytest {' '.join(visible)} -q")
                 if own.success:
                     problems.append(
