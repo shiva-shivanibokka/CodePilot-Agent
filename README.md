@@ -441,7 +441,7 @@ service container undoes most of the point, is in
 ## Development
 
 ```bash
-pytest -q                    # 183 tests, no API key needed
+pytest -q                    # 188 tests, no API key needed
 ruff check .
 python -m codepilot.doctor   # wiring checks
 ```

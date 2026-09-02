@@ -32,6 +32,10 @@ class Result:
     skipped: bool = False
 
 
+class Absent(Exception):
+    """Not wrong, just not configured here. Reported as a skip, not a failure."""
+
+
 @dataclass
 class Doctor:
     live: bool = False
@@ -48,6 +52,8 @@ class Doctor:
             if asyncio.iscoroutine(detail):
                 detail = await detail
             self.record(name, True, str(detail or ""))
+        except Absent as exc:
+            self.record(name, True, str(exc), skipped=True)
         except Exception as exc:  # noqa: BLE001 - a doctor reports, never crashes
             line = traceback.extract_tb(exc.__traceback__)[-1]
             self.record(
@@ -430,10 +436,15 @@ async def _hosted_refusals() -> str:
     return "no token, no host execution, no auto-approve, no escaping the root"
 
 
-async def _api_key() -> str:
+async def _api_key(live: bool = False) -> str:
     key = os.getenv("ANTHROPIC_API_KEY", "")
     if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set (put it in .env)")
+        if live:
+            raise RuntimeError("--live needs ANTHROPIC_API_KEY (put it in .env)")
+        # A missing key is a fact about this machine, not a broken install, and
+        # every CI runner is such a machine. Failing here made the wiring check
+        # unusable in the one place it runs unattended.
+        raise Absent("not set — put it in .env before running the agent or --live")
     return f"present ({key[:7]}…, {len(key)} chars)"
 
 
@@ -501,7 +512,7 @@ async def run(live: bool = False) -> int:
     await doctor.check("large fixture is large", _eval_fixture_is_large)
 
     print("\nAPI" + ("" if live else "  (--live to include billed checks)"))
-    await doctor.check("api key", _api_key)
+    await doctor.check("api key", lambda: _api_key(live))
     if live:
         await doctor.check("models available", _models_live)
         await doctor.check("live tool call", _tool_call_live)
