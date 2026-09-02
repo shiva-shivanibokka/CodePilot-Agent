@@ -18,10 +18,32 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import anthropic
 from anthropic import AsyncAnthropic
+
+
+def load_env(root: Path | str | None = None) -> None:
+    """Read `.env` from a repository, then `~/.codepilot.env`.
+
+    Explicit paths, because `find_dotenv()` searches upward from the *caller*,
+    which for an installed tool is site-packages. This lives beside the client
+    rather than in the CLI because the CLI is not the only thing that needs a
+    key: the eval harness ran a whole sweep without one and scored every task
+    a failure, which is the same mistake as counting an unreachable judge's
+    zero as a verdict.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    base = Path(root) if root is not None else Path.cwd()
+    for candidate in (base / ".env", Path.home() / ".codepilot.env"):
+        if candidate.is_file():
+            load_dotenv(candidate, override=False)
+
 
 # Overridable so a model retirement is a config change, not a code change.
 # Note the asymmetry, which cost a live 404 to discover: some models are served

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import statistics
 import subprocess
@@ -32,7 +33,7 @@ from pathlib import Path
 from codepilot.agent.loop import AgentLoop, new_conversation
 from codepilot.context import Conversation
 from codepilot.events import EventStream
-from codepilot.llm import STRONG_MODEL, LLMClient
+from codepilot.llm import STRONG_MODEL, LLMClient, load_env
 from codepilot.permissions import Budget, PermissionGate
 from codepilot.sandbox.local import LocalSandbox
 from codepilot.tools import ToolContext
@@ -89,6 +90,20 @@ INFRASTRUCTURE = (
     "APIConnectionError", "APITimeoutError", "InternalServerError",
     "Error code: 429", "Error code: 5",
 )
+
+
+#: Failures that are the harness's own fault. Scoring these as agent failures
+#: is worse than an outage, because the number looks plausible: a sweep with no
+#: key ran to completion and reported 0/2 passed at a cost of $0.00.
+HARNESS = (
+    "Could not resolve authentication method",
+    "ANTHROPIC_API_KEY",
+)
+
+
+def _is_harness_fault(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    return any(marker in text for marker in HARNESS)
 
 
 def _is_infrastructure(exc: Exception) -> bool:
@@ -159,6 +174,11 @@ async def run_one(
                 result = await loop.run(task.prompt)
                 stopped_by, edited = result.stopped_by, result.edited
         except Exception as exc:  # noqa: BLE001 - one bad task must not end the sweep
+            if _is_harness_fault(exc):
+                # Not a result. Ending the sweep is the honest response — the
+                # alternative is a results file full of zeros the harness
+                # earned rather than the agent.
+                raise
             error, stopped_by = f"{type(exc).__name__}: {exc}", "error"
             infra = _is_infrastructure(exc)
 
@@ -300,6 +320,16 @@ def render(results: list[RunResult], summary: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _preflight(dry_run: bool) -> None:
+    """Fail before spending anything, rather than after scoring nothing."""
+    load_env(Path.cwd())
+    if not dry_run and not os.getenv("ANTHROPIC_API_KEY"):
+        raise SystemExit(
+            "ANTHROPIC_API_KEY is not set. Put it in .env at the repository "
+            "root, or run with --dry-run to check the fixtures for free."
+        )
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arms", nargs="+", default=["loop"], choices=["loop", "pipeline"])
@@ -318,6 +348,8 @@ async def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="no API calls")
     parser.add_argument("--label", default="", help="tag for the results file")
     args = parser.parse_args()
+
+    _preflight(args.dry_run)
 
     tasks = by_ids(args.tasks) if args.tasks else by_tier(args.tier)
     if args.dry_run:

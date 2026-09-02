@@ -24,7 +24,7 @@ import gradio as gr
 
 from codepilot.agent.loop import AgentLoop, new_conversation
 from codepilot.events import Event, EventStream, EventType
-from codepilot.llm import STRONG_MODEL, LLMClient, LLMError
+from codepilot.llm import STRONG_MODEL, LLMClient, LLMError, load_env
 from codepilot.permissions import Budget, PermissionGate
 from codepilot.sandbox.local import LocalSandbox
 from codepilot.session import SessionStore
@@ -191,14 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=7860)
     args = parser.parse_args(argv)
 
-    try:
-        from dotenv import load_dotenv
-
-        env = Path(args.directory).resolve() / ".env"
-        if env.is_file():
-            load_dotenv(env)
-    except ImportError:
-        pass
+    load_env(Path(args.directory).resolve())
 
     build_ui(str(Path(args.directory).resolve())).launch(
         server_name="127.0.0.1",  # local only: this runs commands

@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from evals.runner import RunResult, _check_survivors, summarise
+from evals.runner import (
+    RunResult,
+    _check_survivors,
+    _is_harness_fault,
+    _preflight,
+    summarise,
+)
 from evals.tasks import HELD_OUT, TASKS, Task, by_ids, by_tier, load_fixture
 
 TIERS = ("single", "multi", "debug", "large", "large-debug")
@@ -224,3 +230,39 @@ def test_an_agent_bug_is_not_mistaken_for_an_outage():
     from evals.runner import _is_infrastructure
 
     assert not _is_infrastructure(ValueError("that text does not appear in the file"))
+
+
+# ---------------------------------------------------------------------------
+# The harness's own failures are not the agent's
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TypeError("Could not resolve authentication method. Expected api_key"),
+        RuntimeError("ANTHROPIC_API_KEY is not set"),
+    ],
+)
+def test_a_missing_key_ends_the_sweep_rather_than_scoring_it(exc):
+    """This one actually happened: 0/2 passed, $0.00 spent, no key loaded.
+
+    A results file full of zeros the harness earned is worse than a crash,
+    because it looks like a measurement.
+    """
+    assert _is_harness_fault(exc)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("overloaded_error"),
+        ValueError("the agent produced a malformed edit"),
+    ],
+)
+def test_ordinary_failures_are_still_scored(exc):
+    assert not _is_harness_fault(exc)
+
+
+def test_a_dry_run_needs_no_key():
+    _preflight(dry_run=True)

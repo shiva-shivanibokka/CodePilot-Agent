@@ -22,7 +22,7 @@ from pathlib import Path
 from codepilot.agent.interrupt import InterruptChannel
 from codepilot.agent.loop import AgentLoop, new_conversation
 from codepilot.events import Event, EventStream, EventType, supports_unicode
-from codepilot.llm import STRONG_MODEL, LLMClient, LLMError
+from codepilot.llm import STRONG_MODEL, LLMClient, LLMError, load_env
 from codepilot.permissions import Budget, PermissionGate
 from codepilot.sandbox.local import LocalSandbox
 from codepilot.session import SessionStore, list_sessions
@@ -33,21 +33,6 @@ PROJECT_FILE = "CODEPILOT.md"
 
 #: Events too chatty for the default view. --verbose shows everything.
 QUIET_EVENTS = {EventType.TURN_START, EventType.TURN_END, EventType.USER_MESSAGE}
-
-
-def _load_env(root: Path) -> None:
-    """Read .env from the repository being worked on, then the user's home.
-
-    Explicit paths, because find_dotenv() searches upward from the *caller*,
-    which for an installed tool is site-packages.
-    """
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    for candidate in (root / ".env", Path.home() / ".codepilot.env"):
-        if candidate.is_file():
-            load_dotenv(candidate, override=False)
 
 
 class Renderer:
@@ -130,7 +115,7 @@ async def _prepare(args, root: Path, ctx: ToolContext, client: LLMClient) -> Non
 
 async def cmd_run(args) -> int:
     root = Path(args.directory).resolve()
-    _load_env(root)
+    load_env(root)
     session = SessionStore.create(root, args.resume)
     stream, ctx, convo, budget, client = _build(args, root, session)
 
@@ -167,7 +152,7 @@ async def cmd_run(args) -> int:
 
 async def cmd_chat(args) -> int:
     root = Path(args.directory).resolve()
-    _load_env(root)
+    load_env(root)
     session = SessionStore.create(root, args.resume)
     stream, ctx, convo, budget, client = _build(args, root, session)
 
@@ -314,7 +299,7 @@ async def cmd_export(args) -> int:
 async def cmd_doctor(args) -> int:
     from codepilot.doctor import run
 
-    _load_env(Path(args.directory).resolve())
+    load_env(Path(args.directory).resolve())
     return await run(live=args.live)
 
 
@@ -394,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = build_parser().parse_args(argv)
     if not os.getenv("ANTHROPIC_API_KEY"):
-        _load_env(Path(args.directory).resolve())
+        load_env(Path(args.directory).resolve())
     try:
         return asyncio.run(args.fn(args))
     except KeyboardInterrupt:
