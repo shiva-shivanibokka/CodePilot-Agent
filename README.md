@@ -140,10 +140,25 @@ files created since, because a restore that leaves them behind is not an undo.
 
 ## What is measured
 
-Fifteen tasks, each a small repository plus a prompt plus a **held-out test file
-the agent never sees**. Pass means those tests pass afterwards. Asking the agent
+Twenty tasks, each a repository plus a prompt plus a **held-out test file the
+agent never sees**. Pass means those tests pass afterwards. Asking the agent
 whether it succeeded measures its self-report; running tests it could not have
 written to measures the work.
+
+They come in two sizes, and the size turned out to matter more than anything
+else measured here:
+
+| | tasks | repository | biggest file |
+|---|---|---|---|
+| small | 15 | 1–4 files | 2–15 lines |
+| large | 5 | [`evals/fixtures/shop`](evals/fixtures/shop) — 14 files, 2,007 lines, its own 54-test suite | 437 lines |
+
+The large fixture is a working order-and-pricing package: money as integer
+minor units, stacking discount rules with a cap, a tax table, weight-banded
+shipping, stock reservations. It has thirteen different `apply` methods and
+thirteen different `validate` methods, so a regex on a method name returns the
+wrong definition — which is the whole reason a symbol index is supposed to
+exist.
 
 ```bash
 python -m evals.runner --dry-run                      # free: do the fixtures measure anything?
@@ -151,6 +166,7 @@ python -m evals.runner --arms loop pipeline           # experiment 1
 python -m evals.runner --experiment edit-style        # experiment 2
 python -m evals.runner --experiment retrieval         # experiment 3
 python -m evals.runner --experiment effort            # experiment 4
+python -m evals.runner --tier large --experiment edit-style   # the same questions, large
 ```
 
 Results land in [`evals/results/`](evals/results/) and are committed. Every
@@ -227,11 +243,41 @@ rewriting is supposed to drop siblings the model forgot to reproduce; at ten
 lines, there is nothing to forget.
 
 **So the eval does not test the regime the advice was written for.** Nothing
-here measures a 400-line file, which is where the argument for `edit_file`
-lives and where a dropped function would actually hurt. The prompt now makes
-the choice conditional on size rather than absolute, and this remains the
-weakest of the four experiments — it establishes that the old blanket advice
-was wrong for small files, not that it is wrong.
+above measures a 400-line file, which is where the argument for `edit_file`
+lives and where a dropped function would actually hurt. That was the honest
+limit of the experiment when it was written, and it is the reason the large
+fixture exists.
+
+#### The same question on a 2,007-line repository
+
+Five tasks against `evals/fixtures/shop`, four of them changes inside the
+437-line pricing module.
+Raw: [`2026-09-02-0456-large-edit-style.json`](evals/results/).
+
+| | pass | cost per completed task | median calls | input tokens | input from cache |
+|---|---|---|---|---|---|
+| `edit_file` only | 5/5 | **$0.369** | **7** | **324,914** | 19% |
+| `write_file` only | 5/5 | $0.613 | 10 | 545,468 | 14% |
+
+**The result reverses.** Exact-string editing is **1.66× cheaper** here and
+cheaper on four of the five tasks, against being 1.83× *more* expensive on the
+small ones. The mechanism is the one the original argument named: rewriting a
+437-line file costs about 5,000 output tokens whether the change is one line or
+fifty, and the model pays that on every attempt.
+
+So neither result was wrong and neither generalises. The prompt's rule is
+conditional on file size because the measurement is too:
+
+> `edit_file` costs tokens proportional to the change […] so it is the right
+> tool for anything of real size. On a file of a few lines, `write_file` is
+> cheaper — matching an exact string costs more than retyping it.
+
+**The safety argument still has not shown up.** Zero of fifty runs across both
+sizes deleted code that was supposed to survive, checked by name against the
+fixture — including the whole-file rewrites of a 437-line module with sixteen
+functions in it. Whole-file rewriting is supposed to drop siblings the model
+forgot to reproduce. At 437 lines it still does not, so the case for
+`edit_file` rests on cost alone, which is what the numbers actually support.
 
 ### Experiment 3 — does an AST index beat plain text search?
 
@@ -264,8 +310,37 @@ regex on a four-file repository.
 keep when grep returns two hundred hits across a thousand files and you need
 the one definition plus its call sites. These fixtures have one to four files.
 The experiment establishes that the index is not free and not automatically
-better; it says nothing about a real codebase, and building a fixture large
-enough to test that is the obvious next piece of work.
+better; it says nothing about a real codebase.
+
+#### The same question on a 2,007-line repository
+
+Same five large tasks, run twice with the same inputs.
+Raw: [`2026-09-02-0502-large-retrieval.json`](evals/results/) and
+[`2026-09-02-0509-large-retrieval-repeat.json`](evals/results/).
+
+| | run 1 | run 2 | change |
+|---|---|---|---|
+| `search` — regex over file contents | $0.3783 | $0.3753 | −0.8% |
+| `find_symbol` — AST index | $0.3526 | $0.4158 | **+17.9%** |
+
+Both configurations passed 5/5 in both runs.
+
+**Still no difference worth claiming, and now the reason is measured rather
+than assumed.** Run 1 has the index 6.8% cheaper. Run 2 has it 10.8% dearer.
+The gap between the two tools is smaller than one tool's disagreement with
+itself, and it changed sign on a repeat — which is what noise looks like.
+
+That is the point of running the repeat. Reporting run 1 alone would have given
+a 6.8% win for the feature this project is named after, and it would not have
+survived being run again. The contrast with experiment 2 is the useful part:
+there the gap was 66% on the same fixture, comfortably outside this 18% band,
+which is why that one is reported as a result and this one is not.
+
+**What is still untested.** Two thousand lines is a large fixture, not a large
+codebase. The regime where an index should be decisive — thousands of files,
+where `search` cannot return its hits inside a context window at all — is
+beyond what this harness runs, and the honest summary is that the index has now
+failed to beat grep at two sizes rather than one.
 
 ### Experiment 4 — model routing against effort tuning
 
@@ -287,13 +362,15 @@ is not in this README because nobody has paid for it yet.
 | claim | evidence |
 |---|---|
 | A fixed pipeline cost 4.2× the loop and passed no more tasks | experiment 1, 15/15 both arms, variance 1.0% |
-| Rewriting small files beats exact-string editing | experiment 2, 1.83× cheaper, 11 of 15 tasks |
-| An AST index does not beat grep on small repositories | experiment 3, difference within noise |
+| Which edit tool is cheaper depends on file size, and reverses | experiment 2: `write_file` 1.83× cheaper at 2–15 lines, `edit_file` 1.66× cheaper at 437 |
+| An AST index beat grep at neither size | experiment 3: gap within noise on small repos; on the large one it changed sign on a repeat |
+| Run-to-run variance is 1% on small tasks and up to 18% on large ones | experiment 1 repeat, experiment 3 repeat — the noise floor every other claim is judged against |
 | A prompt prefix under ~4k tokens silently does not cache | measured directly: 2,119 tokens caches on neither model, 7,239 caches fully |
-| Prompt caching serves ~75% of the loop's input | every run in experiments 1–3 |
-| Whole-file rewrites did not drop code at this file size | 0 of 30 runs, checked by name |
+| Prompt caching serves ~75% of the loop's input on small repos, ~19% on large ones | every run in experiments 1–3; tool results grow faster than the cached prefix |
+| Whole-file rewrites did not drop code, even at 437 lines | 0 of 50 runs, checked by name |
+| Every task passed on the large fixture, in every configuration | 30 large runs, 30 passes |
 
-Total spend to produce every number above: roughly $9 of API usage.
+Total spend to produce every number above: roughly $18 of API usage.
 
 ---
 
@@ -315,7 +392,7 @@ Total spend to produce every number above: roughly $9 of API usage.
 ## Development
 
 ```bash
-pytest -q                    # 123 tests, no API key needed
+pytest -q                    # 151 tests, no API key needed
 ruff check .
 python -m codepilot.doctor   # wiring checks
 ```
