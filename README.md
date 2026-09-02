@@ -168,7 +168,7 @@ python -m evals.runner --dry-run                      # free: do the fixtures me
 python -m evals.runner --arms loop pipeline           # experiment 1
 python -m evals.runner --experiment edit-style        # experiment 2
 python -m evals.runner --experiment retrieval         # experiment 3
-python -m evals.runner --experiment effort            # experiment 4
+python -m evals.runner --experiment effort            # experiment 4: opus low/high vs sonnet
 python -m evals.runner --tier large --experiment edit-style   # the same questions, large
 ```
 
@@ -345,18 +345,51 @@ where `search` cannot return its hits inside a context window at all — is
 beyond what this harness runs, and the honest summary is that the index has now
 failed to beat grep at two sizes rather than one.
 
-### Experiment 4 — model routing against effort tuning
+### Experiment 4 — routing the work down, or turning the dial down
 
-Wired and not run. The harness supports it:
+There are two ways to spend less on the same task: leave the strong model in
+place and lower `effort`, or send the work to a weaker model. Same five large
+tasks, three configurations.
+Raw: [`2026-09-02-1436-large-effort.json`](evals/results/).
+
+| | pass | cost per completed task | median calls | input tokens | wall |
+|---|---|---|---|---|---|
+| `claude-opus-5`, effort low | 5/5 | $0.526 | 8 | 473,854 | 261s |
+| `claude-opus-5`, effort high | 5/5 | $0.577 | 9 | 491,589 | 346s |
+| `claude-sonnet-5`, effort low | 5/5 | **$0.087** | **6** | **182,692** | **178s** |
+
+**Routing wins, and it is not close.** Sonnet 5 cost **6.0×** less than Opus 5
+at the same effort, was cheaper on all five tasks — the range is 5.2× to 8.5× —
+used 61% fewer input tokens and 33% fewer model calls, finished in two thirds
+of the wall clock, and passed everything Opus passed.
+
+**The effort dial did nothing measurable.** Low to high moved cost by 9.7%,
+which is *inside* the 18% run-to-run band measured in experiment 3, and changed
+no outcome. It is not that effort does nothing; it is that on tasks this size
+there was nothing for the extra thinking to buy. One task even came out cheaper
+at high effort than at low, which is the noise showing through again.
+
+**The reason this cannot recommend Sonnet outright.** Every one of the fifteen
+runs passed. When all three configurations score 5/5, the pass-rate column has
+stopped measuring anything, and the honest reading is narrow:
+
+> On work the weaker model can already do, paying six times more for the
+> stronger one buys nothing this eval can see.
+
+That is a real result and a common one in practice, but it is not "Sonnet is as
+good as Opus" — it is "these tasks do not separate them." Separating them needs
+a task the weaker model fails, and there is not one in this suite. Building one
+is the next honest piece of work, and until it exists the default stays
+`claude-opus-5` rather than being changed on the strength of an eval that
+cannot see the difference it would be trading away.
+
+What the number is good for is the bill: if your work looks like these tasks,
 
 ```bash
-python -m evals.runner --experiment effort
+codepilot run --model claude-sonnet-5 "..."
 ```
 
-The question is whether the classic routing table — send cheap work to a weaker
-model — beats leaving one strong model in place and turning `effort` down, and
-it costs roughly $2 to answer. It is unrun rather than unreported: the number
-is not in this README because nobody has paid for it yet.
+is the same result for a sixth of the cost.
 
 ---
 
@@ -367,13 +400,15 @@ is not in this README because nobody has paid for it yet.
 | A fixed pipeline cost 4.2× the loop and passed no more tasks | experiment 1, 15/15 both arms, variance 1.0% |
 | Which edit tool is cheaper depends on file size, and reverses | experiment 2: `write_file` 1.83× cheaper at 2–15 lines, `edit_file` 1.66× cheaper at 437 |
 | An AST index beat grep at neither size | experiment 3: gap within noise on small repos; on the large one it changed sign on a repeat |
+| Routing to a weaker model beat turning the effort dial down | experiment 4: Sonnet 5 was 6.0× cheaper than Opus 5 and passed the same 5/5; low→high effort moved cost 9.7%, inside the noise |
+| The suite can no longer separate the models it compares | experiment 4: 15 of 15 runs passed, so the pass-rate column measures nothing |
 | Run-to-run variance is 1% on small tasks and up to 18% on large ones | experiment 1 repeat, experiment 3 repeat — the noise floor every other claim is judged against |
 | A prompt prefix under ~4k tokens silently does not cache | measured directly: 2,119 tokens caches on neither model, 7,239 caches fully |
 | Prompt caching serves ~75% of the loop's input on small repos, ~19% on large ones | every run in experiments 1–3; tool results grow faster than the cached prefix |
 | Whole-file rewrites did not drop code, even at 437 lines | 0 of 50 runs, checked by name |
 | Every task passed on the large fixture, in every configuration | 30 large runs, 30 passes |
 
-Total spend to produce every number above: roughly $18 of API usage.
+Total spend to produce every number above: roughly $24 of API usage.
 
 ---
 

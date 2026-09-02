@@ -33,7 +33,7 @@ from pathlib import Path
 from codepilot.agent.loop import AgentLoop, new_conversation
 from codepilot.context import Conversation
 from codepilot.events import EventStream
-from codepilot.llm import STRONG_MODEL, LLMClient, load_env
+from codepilot.llm import ROUTED_MODEL, STRONG_MODEL, LLMClient, load_env
 from codepilot.permissions import Budget, PermissionGate
 from codepilot.sandbox.local import LocalSandbox
 from codepilot.tools import ToolContext
@@ -355,38 +355,50 @@ async def main() -> int:
     if args.dry_run:
         return await _dry_run(tasks)
 
-    # Each configuration is (arm, config_name, tools, effort). Restricting the
-    # tool set is how the edit-style experiment isolates one variable.
-    configs: list[tuple[str, str, list[str] | None, str | None]] = []
+    # Each configuration is (arm, config_name, tools, effort, model). Restricting
+    # the tool set is how the edit-style experiment isolates one variable;
+    # carrying the model is how experiment 4 can ask about routing at all.
+    configs: list[tuple[str, str, list[str] | None, str | None, str]] = []
     if args.experiment == "edit-style":
         base = ["read_file", "list_files", "search", "run_tests", "run_command", "finish"]
         configs = [
-            ("loop", "edit_file", [*base, "edit_file"], args.effort),
-            ("loop", "write_file", [*base, "write_file"], args.effort),
+            ("loop", "edit_file", [*base, "edit_file"], args.effort, args.model),
+            ("loop", "write_file", [*base, "write_file"], args.effort, args.model),
         ]
     elif args.experiment == "retrieval":
         # Experiment 3: does an AST index beat plain text search? The tool sets
         # differ by exactly one tool; everything else is identical.
         base = ["read_file", "list_files", "edit_file", "write_file", "run_tests", "finish"]
         configs = [
-            ("loop", "search", [*base, "search"], args.effort),
-            ("loop", "find_symbol", [*base, "find_symbol"], args.effort),
+            ("loop", "search", [*base, "search"], args.effort, args.model),
+            ("loop", "find_symbol", [*base, "find_symbol"], args.effort, args.model),
         ]
     elif args.experiment == "effort":
-        configs = [("loop", f"effort={e}", None, e) for e in ("low", "high")]
+        # Two ways to spend less, against the same tasks. Turning the dial down
+        # on a strong model, or routing the work to a weaker one — the classic
+        # cost lever. An earlier version of this experiment varied only the
+        # dial, which meant it could not answer the question it was named for.
+        configs = [
+            ("loop", "opus/low", None, "low", STRONG_MODEL),
+            ("loop", "opus/high", None, "high", STRONG_MODEL),
+            ("loop", "sonnet/low", None, "low", ROUTED_MODEL),
+        ]
     else:
-        configs = [(arm, args.effort or "default", None, args.effort) for arm in args.arms]
+        configs = [
+            (arm, args.effort or "default", None, args.effort, args.model)
+            for arm in args.arms
+        ]
 
     total = len(tasks) * len(configs)
     print(f"{total} runs: {len(tasks)} tasks x {len(configs)} configs ({args.model})")
 
     results: list[RunResult] = []
     for task in tasks:
-        for arm, config_name, tool_names, effort in configs:
+        for arm, config_name, tool_names, effort, model in configs:
             print(f"  [{len(results) + 1}/{total}] {task.id} · {arm}/{config_name} … ", end="", flush=True)
             result = await run_one(
                 task, arm,
-                model=args.model, effort=effort, config_name=config_name,
+                model=model, effort=effort, config_name=config_name,
                 tool_names=tool_names, max_cost=args.max_cost,
             )
             results.append(result)

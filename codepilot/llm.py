@@ -50,6 +50,9 @@ def load_env(root: Path | str | None = None) -> None:
 # under a bare alias, others only under a dated id.
 STRONG_MODEL = os.getenv("CODEPILOT_STRONG_MODEL", "claude-opus-5")
 FAST_MODEL = os.getenv("CODEPILOT_FAST_MODEL", "claude-haiku-4-5-20251001")
+#: The middle rung, for asking whether routing work down beats turning the
+#: effort dial down on the strong model. Not used by the agent itself.
+ROUTED_MODEL = os.getenv("CODEPILOT_ROUTED_MODEL", "claude-sonnet-5")
 
 #: USD per token, (input, output). Keyed by un-dated model id.
 PRICING: dict[str, tuple[float, float]] = {
