@@ -1,0 +1,26 @@
+# One service, one mount, no secrets in this file.
+#
+#   docker build -f deploy/sandbox.Dockerfile -t codepilot-sandbox:latest .
+#   CODEPILOT_SERVER_TOKEN=$(openssl rand -hex 24) docker compose -f deploy/docker-compose.yml up
+services:
+  codepilot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # No default. The server refuses to start without it.
+      CODEPILOT_SERVER_TOKEN: ${CODEPILOT_SERVER_TOKEN:?set this to a random 24+ byte hex string}
+      CODEPILOT_WORKSPACE_ROOT: /repos
+      CODEPILOT_SANDBOX: docker
+      CODEPILOT_MAX_USD: "1.00"
+      CODEPILOT_MAX_TURNS: "40"
+      # Callers send their own X-Anthropic-Key unless you turn this on.
+      CODEPILOT_ALLOW_SERVER_KEY: "0"
+    volumes:
+      - ${CODEPILOT_REPOS:?set this to the directory of repositories to serve}:/repos
+      # Required to start sandbox containers, and equivalent to root on the
+      # host. See DEPLOYING.md for the alternative.
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped

@@ -6,7 +6,9 @@ asserting them.
 
 It reads your code, edits it, runs the tests, and
 checkpoints every turn to a git ref so `codepilot undo` puts things back. It
-runs on your machine, on your repositories, with your own API key.
+runs on your machine, on your repositories, with your own API key — and it also
+runs as a service if your team needs one, on the terms in
+[DEPLOYING.md](DEPLOYING.md).
 
 Built by Shivani Bokka.
 
@@ -67,7 +69,7 @@ git clone https://github.com/shiva-shivanibokka/CodePilot-Agent
 cd CodePilot-Agent
 pip install -r requirements.txt
 cp .env.example .env        # add your Anthropic API key
-codepilot doctor            # 16 checks that the install actually works
+codepilot doctor            # 17 checks that the install actually works
 ```
 
 `doctor` verifies the things that break silently: that git checkpointing works,
@@ -84,6 +86,7 @@ codepilot undo                                 # revert the last turn
 codepilot sessions                             # what has run here
 codepilot export                               # turn a session into a replay
 python -m codepilot.webui                      # a local browser UI, if you prefer
+codepilot serve --check                        # hosted mode: print the policy, start nothing
 ```
 
 In `chat`, Ctrl-C interrupts a running turn and hands control back rather than
@@ -376,9 +379,18 @@ Total spend to produce every number above: roughly $18 of API usage.
 
 ## Things this does not do
 
-- **It is not hosted, and will not be.** It runs shell commands and edits files;
-  exposing that publicly means running commands for strangers. The public
-  artefact is a [replay](web/) of real recorded sessions.
+- **It is not hosted by me, and the public artefact is a
+  [replay](web/) of real recorded sessions.** Hosting something that runs shell
+  commands means paying for strangers' compute, so what ships instead is the
+  ability for someone else to host it — see below, and
+  [DEPLOYING.md](DEPLOYING.md) for the terms.
+- **Hosted mode is single-tenant.** One shared bearer token, no accounts, no
+  per-caller quota, no audit log, no persistence. The shape you put behind your
+  own gateway, not one you expose to the public.
+- **The container sandbox is not verified end to end.** The machine this was
+  built on has no Docker daemon. The refusals, the policy, the HTTP surface and
+  a complete run were tested — the last against the live API — but "a container
+  actually started" was not, and is flagged rather than implied.
 - **Anthropic only.** Prompt caching and tool-use semantics are where providers
   differ most, and an abstraction that satisfies all of them drops the caching —
   which is the difference between an agent that is affordable to iterate with
@@ -389,10 +401,47 @@ Total spend to produce every number above: roughly $18 of API usage.
   and implemented none of it; those fields are gone rather than left as an API
   that silently does something else.
 
+## Running it for other people
+
+Local mode edits your repository on your machine because you asked it to;
+isolating your code from your own computer would be theatre. A server runs
+someone else's prompt on hardware you pay for, and every one of those
+assumptions stops holding at once. `codepilot serve` is not a wrapper around
+the CLI — it is that list of assumptions turned into refusals:
+
+| | local | hosted |
+|---|---|---|
+| commands run | on your machine, in your repository | in a container, on a copy |
+| a command outside the allowlist | asks you | refused, with the reason |
+| your repository | edited in place, behind git checkpoints | untouched; you get a patch back |
+| the API key | yours, from `.env` | the caller's, per request |
+| the spending ceiling | yours | the deployment's; a request cannot raise it |
+
+It refuses to start without a token of at least 16 characters. It refuses to run
+commands on the host unless two separate variables say so, the second named
+`CODEPILOT_ALLOW_HOST_EXECUTION`. It never hands the permission gate a prompt
+callback, because there is nobody at the keyboard — so every command that would
+have asked you is denied with its reason instead.
+
+```bash
+docker build -f deploy/sandbox.Dockerfile -t codepilot-sandbox:latest .
+export CODEPILOT_SERVER_TOKEN=$(openssl rand -hex 24)
+export CODEPILOT_WORKSPACE_ROOT=/srv/repos
+codepilot serve --check     # prints the effective policy and starts nothing
+codepilot serve
+```
+
+`--check` first, every time: it prints what you actually deployed — sandbox,
+whether host execution is on, whether callers must bring their own key, the
+ceiling, which repositories are visible — so you can compare it against what
+you meant. The full guide, including why mounting the Docker socket into the
+service container undoes most of the point, is in
+[DEPLOYING.md](DEPLOYING.md).
+
 ## Development
 
 ```bash
-pytest -q                    # 151 tests, no API key needed
+pytest -q                    # 183 tests, no API key needed
 ruff check .
 python -m codepilot.doctor   # wiring checks
 ```

@@ -296,6 +296,21 @@ async def cmd_export(args) -> int:
     return 0
 
 
+async def cmd_serve(args) -> int:
+    """Run the HTTP service.
+
+    Deliberately a thin shim: every decision hosted mode makes lives in
+    `codepilot.server`, where the refusals are, rather than in argument
+    parsing.
+    """
+    from codepilot.server import main as serve_main
+
+    argv = ["--host", args.host, "--port", str(args.port)]
+    if args.check:
+        argv.append("--check")
+    return serve_main(argv)
+
+
 async def cmd_doctor(args) -> int:
     from codepilot.doctor import run
 
@@ -360,6 +375,14 @@ def build_parser() -> argparse.ArgumentParser:
     export_p.add_argument("--name", default="", help="output filename stem")
     export_p.add_argument("--title", default="", help="title shown in the picker")
     export_p.set_defaults(fn=cmd_export)
+
+    serve_p = sub.add_parser("serve", help="run as an HTTP service (see DEPLOYING.md)")
+    serve_p.add_argument("--host", default="127.0.0.1")
+    serve_p.add_argument("--port", type=int, default=8000)
+    serve_p.add_argument(
+        "--check", action="store_true", help="validate the deployment and exit"
+    )
+    serve_p.set_defaults(fn=cmd_serve)
 
     doctor_p = sub.add_parser("doctor", help="check the installation end to end")
     doctor_p.add_argument("--live", action="store_true", help="include billed API checks")

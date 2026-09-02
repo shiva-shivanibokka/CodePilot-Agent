@@ -1,9 +1,15 @@
 """
-Hermetic container execution, for the eval harness.
+Container execution, for the eval harness and for hosted mode.
 
-The eval runs model-generated code against fixture repositories, so it needs
-real isolation and a clean slate per task — otherwise one task's leftovers
-change the next task's result, and the numbers stop meaning anything.
+Two shapes, because the two callers need opposite things from the filesystem:
+
+* **tmpfs** (the default) — the eval harness. Model-generated code runs against
+  a fixture written into the container and nothing survives the run, so one
+  task's leftovers cannot change the next task's result.
+* **mounted** — hosted mode. The agent's `Workspace` reads and writes on the
+  host, so the container has to see those same files or `run_tests` runs
+  against an empty directory and reports a green suite that does not exist.
+  Only the session's own directory is mounted, and the network stays off.
 
 The timeout is enforced *inside* the container by coreutils `timeout`. Wrapping
 `exec_run` in `asyncio.wait_for` looks equivalent and is not: it cancels the
@@ -17,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import shlex
 import tarfile
 import time
@@ -48,6 +55,7 @@ class DockerSandbox:
         memory: str = "512m",
         cpus: int = 1,
         network: str = "none",
+        mount: Path | None = None,
     ) -> None:
         try:
             import docker  # noqa: PLC0415 - optional dependency, only for evals
@@ -65,8 +73,31 @@ class DockerSandbox:
         self._memory = memory
         self._cpus = cpus
         self._network = network
+        self._mount = Path(mount).resolve() if mount is not None else None
+        if self._mount is not None and not self._mount.is_dir():
+            raise DockerUnavailable(f"nothing to mount at {self._mount}")
         self._container = None
         self.id = uuid.uuid4().hex[:12]
+
+    def _filesystem_options(self) -> dict:
+        """Either a throwaway tmpfs or the session's own directory.
+
+        The uid matters: the container execs as a fixed user, and a bind mount
+        keeps the host's ownership. Run as the host user on POSIX or every
+        write the agent makes is denied — which surfaces as the agent
+        reporting that it cannot edit its own repository.
+        """
+        if self._mount is None:
+            return {
+                "user": "nobody",
+                "tmpfs": {WORKDIR: "size=256m,uid=65534,mode=1777"},
+            }
+        options: dict = {
+            "volumes": {str(self._mount): {"bind": WORKDIR, "mode": "rw"}},
+        }
+        if hasattr(os, "getuid"):
+            options["user"] = f"{os.getuid()}:{os.getgid()}"
+        return options
 
     async def start(self, files: dict[str, str] | None = None) -> str:
         def _start():
@@ -78,11 +109,9 @@ class DockerSandbox:
                 mem_limit=self._memory,
                 nano_cpus=self._cpus * 1_000_000_000,
                 network_mode=self._network,
-                user="nobody",
                 working_dir=WORKDIR,
-                # uid must match the user we exec as, or every write is denied.
-                tmpfs={WORKDIR: "size=256m,uid=65534,mode=1777"},
                 name=f"codepilot_{self.id}",
+                **self._filesystem_options(),
             )
 
         self._container = await asyncio.to_thread(_start)

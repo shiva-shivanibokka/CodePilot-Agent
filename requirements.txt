@@ -8,7 +8,12 @@ python-dotenv>=1.0.0
 # Local browser UI (optional; the CLI is the primary interface)
 gradio>=6.0,<7.0
 
-# Hermetic sandbox for the eval harness (optional)
+# Hosted mode (optional; see DEPLOYING.md). Also a transitive dependency of
+# gradio, so installing it explicitly only pins what is already there.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# Container execution: the eval harness always, hosted mode by default
 docker>=7.0.0
 
 # Tests
