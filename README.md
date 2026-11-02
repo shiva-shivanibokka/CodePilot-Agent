@@ -50,8 +50,8 @@ That transcript is from a real run, lightly trimmed for width.
 
 It is easy to build something that *looks* like a coding agent. This repository
 began as one: six named agents, a state graph, a sandbox, a live cost ticker, a
-README describing all of it. [`docs/`](docs/superpowers/specs/) has the design;
-the short version is that a line-by-line audit found the application had never
+README describing all of it.
+The short version is that a line-by-line audit found the application had never
 been run. It raised `KeyError` on its first node transition, its plan pointer
 never advanced, its retry loop was unbounded, and one of the two model IDs it
 routed to had never existed.
